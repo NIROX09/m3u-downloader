@@ -222,6 +222,28 @@ func (s *Store) RetryFailedJob(ctx context.Context, id int64) error {
 	return err
 }
 
+// RetryJob requeues a failed or cancelled job. Cancelled jobs are terminal
+// only until the user explicitly chooses to retry them.
+func (s *Store) RetryJob(ctx context.Context, id int64) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE jobs
+		 SET status='pending', attempts=0, progress_bytes=0, last_error=NULL,
+		     started_at=NULL, completed_at=NULL
+		 WHERE id=? AND status IN ('failed','cancelled')`,
+		id)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return errors.New("job is not failed or cancelled")
+	}
+	return nil
+}
+
 // RetryAllFailedJobs flips every failed job back to pending and resets its
 // attempt counter. Returns the number of rows updated.
 func (s *Store) RetryAllFailedJobs(ctx context.Context) (int, error) {

@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -69,6 +71,7 @@ func (s *Server) Handler(frontend fs.FS) (http.Handler, error) {
 	mux.HandleFunc("GET /api/categories", s.handleCategories)
 	mux.HandleFunc("GET /api/catalog", s.handleCatalog)
 	mux.HandleFunc("GET /api/movie", s.handleMovie)
+	mux.HandleFunc("GET /api/cover/movie", s.handleMovieCover)
 	mux.HandleFunc("GET /api/series", s.handleSeries)
 	mux.HandleFunc("GET /api/episodes", s.handleEpisodes)
 	mux.HandleFunc("GET /api/queue/movie", s.handleMovieQueueStatus)
@@ -205,6 +208,59 @@ func (s *Server) handleMovie(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"movie": movie,
 	})
+}
+
+func (s *Server) handleMovieCover(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	id, err := strconv.Atoi(r.URL.Query().Get("id"))
+	if err != nil || id <= 0 {
+		http.Error(w, "invalid movie id", http.StatusBadRequest)
+		return
+	}
+	movie, err := s.store.GetVOD(ctx, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if movie == nil || strings.TrimSpace(movie.StreamIcon) == "" {
+		http.Error(w, "cover not available", http.StatusNotFound)
+		return
+	}
+
+	coverURL, err := url.Parse(strings.TrimSpace(movie.StreamIcon))
+	if err != nil || (coverURL.Scheme != "http" && coverURL.Scheme != "https") || coverURL.Host == "" {
+		http.Error(w, "invalid cover URL", http.StatusBadGateway)
+		return
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, coverURL.String(), nil)
+	if err != nil {
+		http.Error(w, "invalid cover URL", http.StatusBadGateway)
+		return
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		http.Error(w, "cover could not be loaded", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		http.Error(w, "cover upstream returned an error", http.StatusBadGateway)
+		return
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(strings.ToLower(contentType), "image/") {
+		http.Error(w, "cover response is not an image", http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = io.Copy(w, io.LimitReader(resp.Body, 20<<20))
 }
 
 func (s *Server) handleQueueMovie(w http.ResponseWriter, r *http.Request) {
@@ -859,11 +915,11 @@ func (s *Server) handleRetryJob(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "job not found", http.StatusNotFound)
 		return
 	}
-	if status != "failed" {
-		http.Error(w, "only failed jobs can be retried", http.StatusConflict)
+	if status != "failed" && status != "cancelled" {
+		http.Error(w, "only failed or cancelled jobs can be retried", http.StatusConflict)
 		return
 	}
-	if err := s.store.RetryFailedJob(r.Context(), id); err != nil {
+	if err := s.store.RetryJob(r.Context(), id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

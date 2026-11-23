@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 )
@@ -255,6 +256,44 @@ func TestEnqueueEpisodeJobStoresSeriesMetadata(t *testing.T) {
 	}
 	if len(jobs) != 0 {
 		t.Fatalf("jobs after series removal = %+v", jobs)
+	}
+}
+
+func TestRetryCancelledJob(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	id, err := s.EnqueueJob(ctx, "vod", 100, "/movies/Test/Test.mkv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CancelJob(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RetryJob(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := s.GetJobStatus(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != "pending" {
+		t.Fatalf("status = %q, want pending", status)
+	}
+
+	var progress int64
+	var lastError sql.NullString
+	var startedAt, completedAt *int64
+	err = s.DB().QueryRow(`
+		SELECT progress_bytes, last_error, started_at, completed_at
+		FROM jobs WHERE id=?`, id).Scan(&progress, &lastError, &startedAt, &completedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if progress != 0 || lastError.Valid || startedAt != nil || completedAt != nil {
+		t.Fatalf("retry reset incomplete: progress=%d error=%q started=%v completed=%v",
+			progress, lastError.String, startedAt, completedAt)
 	}
 }
 

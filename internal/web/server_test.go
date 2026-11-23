@@ -77,6 +77,53 @@ func TestJobHTTPActions(t *testing.T) {
 	if retryResponse.Code != http.StatusOK {
 		t.Fatalf("retry status = %d: %s", retryResponse.Code, retryResponse.Body.String())
 	}
+
+	cancelledID, err := st.EnqueueJob(ctx, "vod", 44, "/movies/Cancelled (2024)/Cancelled (2024).mkv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CancelJob(ctx, cancelledID); err != nil {
+		t.Fatal(err)
+	}
+
+	cancelledRetryResponse := httptest.NewRecorder()
+	cancelledRetryRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/api/jobs/"+strconv.FormatInt(cancelledID, 10)+"/retry",
+		nil,
+	)
+	cancelledRetryRequest.SetPathValue("id", strconv.FormatInt(cancelledID, 10))
+	handler.ServeHTTP(cancelledRetryResponse, cancelledRetryRequest)
+	if cancelledRetryResponse.Code != http.StatusOK {
+		t.Fatalf("cancelled retry status = %d: %s",
+			cancelledRetryResponse.Code,
+			cancelledRetryResponse.Body.String())
+	}
+}
+
+func TestMovieCoverMissingMovie(t *testing.T) {
+	st, err := store.Open(t.TempDir() + "/state.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	server := New(st, nil, catalog.EnqueueConfig{})
+	handler, err := server.Handler(fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte("test")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(
+		response,
+		httptest.NewRequest(http.MethodGet, "/api/cover/movie?id=999999", nil),
+	)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("cover missing status = %d, want 404", response.Code)
+	}
 }
 
 func TestEpisodeQueueHTTPActions(t *testing.T) {

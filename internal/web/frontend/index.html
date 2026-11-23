@@ -257,6 +257,59 @@
             font-size: 42px;
         }
 
+        .poster-download {
+            position: absolute;
+            top: 9px;
+            right: 9px;
+            z-index: 2;
+            width: 38px;
+            height: 38px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            border-radius: 10px;
+            background: rgba(20, 29, 43, 0.78);
+            color: #ffffff;
+            backdrop-filter: blur(8px);
+            box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28);
+            opacity: 0;
+            transform: translateY(-4px) scale(0.96);
+            pointer-events: none;
+            cursor: pointer;
+            transition: opacity 0.16s ease, transform 0.16s ease,
+                        background 0.16s ease, border-color 0.16s ease;
+        }
+
+        .media-card:hover .poster-download,
+        .media-card:focus-within .poster-download {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            pointer-events: auto;
+        }
+
+        .poster-download svg {
+            width: 17px;
+            height: 17px;
+            stroke: currentColor;
+        }
+
+        .poster-download.queued {
+            background: rgba(31, 156, 240, 0.92);
+            border-color: rgba(255, 255, 255, 0.28);
+            box-shadow: 0 8px 20px rgba(31, 156, 240, 0.28);
+        }
+
+        .poster-download:hover {
+            background: rgba(40, 118, 228, 0.96);
+            border-color: rgba(255, 255, 255, 0.34);
+        }
+
+        .poster-download:disabled {
+            opacity: 0.55;
+            cursor: wait;
+        }
+
         .media-title {
             font-size: 14px;
             font-weight: 600;
@@ -1064,6 +1117,69 @@ function setMovieQueueButton(button, queued, status = "") {
 }
 
 
+async function refreshCardMovieQueueState(movieID, button) {
+    button.disabled = true;
+    try {
+        const data = await api(
+            `/api/queue/movie?id=${encodeURIComponent(movieID)}`
+        );
+        setCardMovieQueueButton(button, data.queued, data.status);
+    } catch (error) {
+        button.disabled = false;
+        button.title = "Warteschlangenstatus konnte nicht geladen werden";
+        button.setAttribute("aria-label", "Warteschlangenstatus erneut prüfen");
+    }
+}
+
+function setCardMovieQueueButton(button, queued, status = "") {
+    button.dataset.queued = queued ? "true" : "false";
+    button.disabled = false;
+    button.classList.toggle("queued", queued);
+    if (queued) {
+        button.title = status === "active"
+            ? "Download läuft – aus Warteschlange entfernen"
+            : "Aus der Warteschlange entfernen";
+        button.setAttribute("aria-label", "Aus der Warteschlange entfernen");
+    } else {
+        button.title = "Zur Download-Warteschlange hinzufügen";
+        button.setAttribute("aria-label", "Zur Download-Warteschlange hinzufügen");
+    }
+}
+
+async function toggleCardMovieQueue(movieID, button) {
+    const currentlyQueued = button.dataset.queued === "true";
+    button.disabled = true;
+    try {
+        let response;
+        if (currentlyQueued) {
+            response = await fetch(
+                `/api/queue/movie?id=${encodeURIComponent(movieID)}`,
+                { method: "DELETE" }
+            );
+        } else {
+            response = await fetch("/api/queue/movie", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({id: Number(movieID)})
+            });
+        }
+        const data = await response.json().catch(() => ({}));
+        if (response.status === 409 && !currentlyQueued) {
+            setCardMovieQueueButton(button, true, "pending");
+            return;
+        }
+        if (!response.ok) {
+            throw new Error(data.message || `HTTP ${response.status}`);
+        }
+        setCardMovieQueueButton(button, !currentlyQueued, currentlyQueued ? "" : "pending");
+        await loadDashboard();
+    } catch (error) {
+        button.disabled = false;
+        button.title = `Fehler: ${error.message}`;
+        await refreshCardMovieQueueState(movieID, button);
+    }
+}
+
 // Aktuellen Warteschlangenstatus eines Films laden
 async function refreshMovieQueueState(movieID, button, messageElement) {
     button.disabled = true;
@@ -1303,7 +1419,7 @@ async function removeSeriesQueue(seriesID) {
 function queueJobActions(job) {
     const actions = document.createElement("div");
     actions.className = "queue-row-actions";
-    if (job.status === "failed") {
+    if (job.status === "failed" || job.status === "cancelled") {
         actions.appendChild(createQueueAction("Erneut versuchen", "retry", job.id));
     }
     if (job.status === "pending" || job.status === "active") {
@@ -1859,7 +1975,11 @@ function renderMedia(items, view) {
 
         if (image) {
             const img = document.createElement("img");
-            img.src = image;
+            if (view === "movies" && id != null) {
+                img.src = `/api/cover/movie?id=${encodeURIComponent(id)}`;
+            } else {
+                img.src = image;
+            }
             img.alt = title;
             img.loading = "lazy";
 
@@ -1870,6 +1990,30 @@ function renderMedia(items, view) {
             poster.appendChild(img);
         } else {
             poster.innerHTML = '<div class="poster-placeholder">🎬</div>';
+        }
+
+        if (view === "movies" && id != null) {
+            const downloadButton = document.createElement("button");
+            downloadButton.type = "button";
+            downloadButton.className = "poster-download";
+            downloadButton.dataset.queued = "false";
+            downloadButton.title = "Warteschlangenstatus wird geprüft";
+            downloadButton.setAttribute("aria-label", `${title} zur Warteschlange hinzufügen`);
+            downloadButton.innerHTML = `
+                <svg viewBox="0 0 24 24" fill="none" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 3v12"></path>
+                    <path d="m7 10 5 5 5-5"></path>
+                    <path d="M5 21h14"></path>
+                </svg>`;
+
+            downloadButton.addEventListener("click", async event => {
+                event.stopPropagation();
+                event.preventDefault();
+                await toggleCardMovieQueue(id, downloadButton);
+            });
+            poster.appendChild(downloadButton);
+            refreshCardMovieQueueState(id, downloadButton);
         }
 
         const name = document.createElement("div");
@@ -1934,6 +2078,7 @@ async function openMovieDetails(movieID) {
 function renderMovieDetails(movie) {
     const title = movie.Name || "Unbekannter Titel";
     const image = movie.StreamIcon || "";
+    const movieID = movie.StreamID ?? movie.stream_id;
     const year = movie.Year || "";
     const plot = movie.Plot || "Für diesen Film ist keine Beschreibung hinterlegt.";
 
@@ -1943,7 +2088,7 @@ function renderMovieDetails(movie) {
     const hero = document.createElement("div");
     hero.className = "detail-hero";
 
-    const poster = createDetailPoster(image, title);
+    const poster = createDetailPoster(image, title, movieID);
 
     const info = document.createElement("div");
     info.className = "detail-heading";
@@ -2001,8 +2146,6 @@ function renderMovieDetails(movie) {
     const queueMessage = document.createElement("div");
     queueMessage.className = "queue-message";
     queueMessage.setAttribute("aria-live", "polite");
-
-    const movieID = movie.StreamID ?? movie.stream_id;
 
     queueButton.addEventListener("click", () => {
         if (queueButton.textContent === "Warteschlangenstatus erneut prüfen") {
@@ -2356,13 +2499,15 @@ document.addEventListener("keydown", event => {
 
 
 // Hilfsfunktionen für Details
-function createDetailPoster(image, title) {
+function createDetailPoster(image, title, movieID = null) {
     const poster = document.createElement("img");
     poster.className = "detail-poster";
     poster.alt = title;
 
     if (image) {
-        poster.src = image;
+        poster.src = movieID
+            ? `/api/cover/movie?id=${encodeURIComponent(movieID)}`
+            : image;
         poster.onerror = () => {
             poster.removeAttribute("src");
             poster.alt = "Kein Poster verfügbar";
