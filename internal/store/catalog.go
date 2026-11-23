@@ -89,6 +89,26 @@ func (s *Store) GetSeries(ctx context.Context, seriesID int) (*SeriesRow, error)
 	return &r, nil
 }
 
+func (s *Store) GetEpisode(ctx context.Context, episodeID int) (*EpisodeRow, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT episode_id,series_id,season_number,episode_num,
+		       COALESCE(title,''),COALESCE(plot,''),COALESCE(container_extension,''),
+		       COALESCE(duration_secs,0)
+		FROM episodes WHERE episode_id=?`, episodeID)
+	var e EpisodeRow
+	err := row.Scan(
+		&e.EpisodeID, &e.SeriesID, &e.SeasonNumber, &e.EpisodeNum,
+		&e.Title, &e.Plot, &e.ContainerExt, &e.DurationSecs,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
 func (s *Store) ListAllSeries(ctx context.Context) ([]SeriesRow, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT series_id,category_id,name,COALESCE(year,0),COALESCE(plot,''),
@@ -184,6 +204,30 @@ func (s *Store) ListCategories(ctx context.Context, kind string) ([]CategoryRow,
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, type, name, COALESCE(parent_id,0), COALESCE(fetched_at,0)
 		 FROM categories WHERE type=? ORDER BY name`, kind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []CategoryRow
+	for rows.Next() {
+		var c CategoryRow
+		if err := rows.Scan(&c.ID, &c.Type, &c.Name, &c.ParentID, &c.FetchedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListCategoriesFiltered(ctx context.Context, kind string, hideAdult bool) ([]CategoryRow, error) {
+	if !hideAdult {
+		return s.ListCategories(ctx, kind)
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, type, name, COALESCE(parent_id,0), COALESCE(fetched_at,0)
+		 FROM categories
+		 WHERE type=? AND name NOT LIKE 'FOR ADULTS%' COLLATE NOCASE
+		 ORDER BY name`, kind)
 	if err != nil {
 		return nil, err
 	}
@@ -373,6 +417,42 @@ func (s *Store) ListEpisodes(ctx context.Context, seriesID, season int) ([]Episo
 
 // ListVODPage returns a filtered page of movies and the total match count.
 func (s *Store) ListVODPage(ctx context.Context, categoryID int, search string, limit, offset int) ([]VODRow, int, error) {
+	return s.ListVODPageFiltered(ctx, categoryID, search, limit, offset, false)
+}
+
+func vodSortSQL(sort string) string {
+	switch sort {
+	case "year_desc":
+		return "ORDER BY COALESCE(year,0) DESC, name COLLATE NOCASE"
+	case "year_asc":
+		return "ORDER BY COALESCE(year,0) ASC, name COLLATE NOCASE"
+	case "rating_desc":
+		return "ORDER BY COALESCE(rating,0) DESC, name COLLATE NOCASE"
+	case "name_desc":
+		return "ORDER BY name COLLATE NOCASE DESC"
+	default:
+		return "ORDER BY name COLLATE NOCASE ASC"
+	}
+}
+
+func seriesSortSQL(sort string) string {
+	switch sort {
+	case "year_desc":
+		return "ORDER BY COALESCE(year,0) DESC, name COLLATE NOCASE"
+	case "year_asc":
+		return "ORDER BY COALESCE(year,0) ASC, name COLLATE NOCASE"
+	case "name_desc":
+		return "ORDER BY name COLLATE NOCASE DESC"
+	default:
+		return "ORDER BY name COLLATE NOCASE ASC"
+	}
+}
+
+func (s *Store) ListVODPageFiltered(ctx context.Context, categoryID int, search string, limit, offset int, hideAdult bool) ([]VODRow, int, error) {
+	return s.ListVODPageSorted(ctx, categoryID, search, limit, offset, hideAdult, "name")
+}
+
+func (s *Store) ListVODPageSorted(ctx context.Context, categoryID int, search string, limit, offset int, hideAdult bool, sort string) ([]VODRow, int, error) {
 	if limit < 1 || limit > 100 {
 		limit = 50
 	}
@@ -383,16 +463,26 @@ func (s *Store) ListVODPage(ctx context.Context, categoryID int, search string, 
 	search = "%" + search + "%"
 
 	var total int
+	filterSQL := ""
+	args := []any{categoryID, categoryID, search}
+	if hideAdult {
+		filterSQL = ` AND NOT EXISTS (
+			SELECT 1 FROM categories c
+			WHERE c.id = vods.category_id
+			  AND c.name LIKE 'FOR ADULTS%' COLLATE NOCASE
+		)`
+	}
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		FROM vods
 		WHERE (? = 0 OR category_id = ?)
-		  AND name LIKE ? COLLATE NOCASE`,
-		categoryID, categoryID, search).Scan(&total)
+		  AND name LIKE ? COLLATE NOCASE`+filterSQL,
+		args...).Scan(&total)
 	if err != nil {
 		return nil, 0, err
 	}
 
+	orderBy := vodSortSQL(sort)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT stream_id, category_id, name,
 		       COALESCE(year,0), COALESCE(plot,''),
@@ -401,10 +491,10 @@ func (s *Store) ListVODPage(ctx context.Context, categoryID int, search string, 
 		       COALESCE(added,0), COALESCE(rating,0)
 		FROM vods
 		WHERE (? = 0 OR category_id = ?)
-		  AND name LIKE ? COLLATE NOCASE
-		ORDER BY name
+		  AND name LIKE ? COLLATE NOCASE`+filterSQL+`
+		`+orderBy+`
 		LIMIT ? OFFSET ?`,
-		categoryID, categoryID, search, limit, offset)
+		append(args, limit, offset)...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -432,6 +522,14 @@ func (s *Store) ListVODPage(ctx context.Context, categoryID int, search string, 
 
 // ListSeriesPage returns a filtered page of series and the total match count.
 func (s *Store) ListSeriesPage(ctx context.Context, categoryID int, search string, limit, offset int) ([]SeriesRow, int, error) {
+	return s.ListSeriesPageFiltered(ctx, categoryID, search, limit, offset, false)
+}
+
+func (s *Store) ListSeriesPageFiltered(ctx context.Context, categoryID int, search string, limit, offset int, hideAdult bool) ([]SeriesRow, int, error) {
+	return s.ListSeriesPageSorted(ctx, categoryID, search, limit, offset, hideAdult, "name")
+}
+
+func (s *Store) ListSeriesPageSorted(ctx context.Context, categoryID int, search string, limit, offset int, hideAdult bool, sort string) ([]SeriesRow, int, error) {
 	if limit < 1 || limit > 100 {
 		limit = 50
 	}
@@ -442,12 +540,21 @@ func (s *Store) ListSeriesPage(ctx context.Context, categoryID int, search strin
 	search = "%" + search + "%"
 
 	var total int
+	filterSQL := ""
+	args := []any{categoryID, categoryID, search}
+	if hideAdult {
+		filterSQL = ` AND NOT EXISTS (
+			SELECT 1 FROM categories c
+			WHERE c.id = series.category_id
+			  AND c.name LIKE 'FOR ADULTS%' COLLATE NOCASE
+		)`
+	}
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		FROM series
 		WHERE (? = 0 OR category_id = ?)
-		  AND name LIKE ? COLLATE NOCASE`,
-		categoryID, categoryID, search).Scan(&total)
+		  AND name LIKE ? COLLATE NOCASE`+filterSQL,
+		args...).Scan(&total)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -458,10 +565,10 @@ func (s *Store) ListSeriesPage(ctx context.Context, categoryID int, search strin
 		       COALESCE(cover_url,''), COALESCE(backdrop_url,'')
 		FROM series
 		WHERE (? = 0 OR category_id = ?)
-		  AND name LIKE ? COLLATE NOCASE
-		ORDER BY name
+		  AND name LIKE ? COLLATE NOCASE`+filterSQL+`
+		`+seriesSortSQL(sort)+`
 		LIMIT ? OFFSET ?`,
-		categoryID, categoryID, search, limit, offset)
+		append(args, limit, offset)...)
 	if err != nil {
 		return nil, 0, err
 	}

@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -41,24 +42,14 @@ func (s *Server) ListenAndServe(addr string) error {
 		return fmt.Errorf("load frontend: %w", err)
 	}
 
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("GET /api/health", s.handleHealth)
-	mux.HandleFunc("GET /api/dashboard", s.handleDashboard)
-	mux.HandleFunc("GET /api/categories", s.handleCategories)
-	mux.HandleFunc("GET /api/catalog", s.handleCatalog)
-	mux.HandleFunc("GET /api/movie", s.handleMovie)
-	mux.HandleFunc("GET /api/series", s.handleSeries)
-	mux.HandleFunc("GET /api/episodes", s.handleEpisodes)
-	mux.HandleFunc("GET /api/queue/movie", s.handleMovieQueueStatus)
-	mux.HandleFunc("POST /api/queue/movie", s.handleQueueMovie)
-	mux.HandleFunc("DELETE /api/queue/movie", s.handleRemoveMovieFromQueue)
-
-	mux.Handle("GET /", http.FileServer(http.FS(frontend)))
+	handler, err := s.Handler(frontend)
+	if err != nil {
+		return err
+	}
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -71,6 +62,36 @@ func (s *Server) ListenAndServe(addr string) error {
 	return err
 }
 
+func (s *Server) Handler(frontend fs.FS) (http.Handler, error) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/health", s.handleHealth)
+	mux.HandleFunc("GET /api/dashboard", s.handleDashboard)
+	mux.HandleFunc("GET /api/categories", s.handleCategories)
+	mux.HandleFunc("GET /api/catalog", s.handleCatalog)
+	mux.HandleFunc("GET /api/movie", s.handleMovie)
+	mux.HandleFunc("GET /api/series", s.handleSeries)
+	mux.HandleFunc("GET /api/episodes", s.handleEpisodes)
+	mux.HandleFunc("GET /api/queue/movie", s.handleMovieQueueStatus)
+	mux.HandleFunc("POST /api/queue/movie", s.handleQueueMovie)
+	mux.HandleFunc("DELETE /api/queue/movie", s.handleRemoveMovieFromQueue)
+	mux.HandleFunc("GET /api/queue/episode", s.handleEpisodeQueueStatus)
+	mux.HandleFunc("POST /api/queue/episode", s.handleQueueEpisode)
+	mux.HandleFunc("DELETE /api/queue/episode", s.handleRemoveEpisodeFromQueue)
+	mux.HandleFunc("GET /api/queue/season", s.handleSeasonQueueStatus)
+	mux.HandleFunc("POST /api/queue/season", s.handleQueueSeason)
+	mux.HandleFunc("DELETE /api/queue/season", s.handleRemoveSeasonFromQueue)
+	mux.HandleFunc("GET /api/queue/series", s.handleSeriesQueueStatus)
+	mux.HandleFunc("POST /api/queue/series", s.handleQueueSeries)
+	mux.HandleFunc("DELETE /api/queue/series", s.handleRemoveSeriesFromQueue)
+	mux.HandleFunc("GET /api/jobs", s.handleListJobs)
+	mux.HandleFunc("POST /api/jobs/{id}/retry", s.handleRetryJob)
+	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleCancelJob)
+	mux.HandleFunc("DELETE /api/jobs/{id}", s.handleDeleteJob)
+
+	mux.Handle("GET /", http.FileServer(http.FS(frontend)))
+	return mux, nil
+}
+
 func (s *Server) handleCategories(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -81,7 +102,8 @@ func (s *Server) handleCategories(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	categories, err := s.store.ListCategories(ctx, kind)
+	hideAdult := r.URL.Query().Get("nsfw") != "0"
+	categories, err := s.store.ListCategoriesFiltered(ctx, kind, hideAdult)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -120,14 +142,16 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 
 	offset := (page - 1) * limit
 	search := strings.TrimSpace(query.Get("q"))
+	hideAdult := query.Get("nsfw") != "0"
+	sort := strings.TrimSpace(query.Get("sort"))
 
 	var items any
 	var total int
 
 	switch kind {
 	case "vod":
-		result, count, err := s.store.ListVODPage(
-			ctx, categoryID, search, limit, offset,
+		result, count, err := s.store.ListVODPageSorted(
+			ctx, categoryID, search, limit, offset, hideAdult, sort,
 		)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -137,8 +161,8 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		total = count
 
 	case "series":
-		result, count, err := s.store.ListSeriesPage(
-			ctx, categoryID, search, limit, offset,
+		result, count, err := s.store.ListSeriesPageSorted(
+			ctx, categoryID, search, limit, offset, hideAdult, sort,
 		)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -300,6 +324,269 @@ func (s *Server) handleRemoveMovieFromQueue(w http.ResponseWriter, r *http.Reque
 		"status":  "cancelled",
 		"queued":  false,
 		"message": message,
+	})
+}
+
+func (s *Server) handleEpisodeQueueStatus(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	id, err := strconv.Atoi(r.URL.Query().Get("id"))
+	if err != nil || id <= 0 {
+		http.Error(w, "invalid episode id", http.StatusBadRequest)
+		return
+	}
+
+	status, err := s.store.GetQueuedJobStatus(ctx, "episode", id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"queued": status != "", "status": status})
+}
+
+func (s *Server) handleQueueEpisode(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+
+	var request struct {
+		SeriesID  int `json:"series_id"`
+		EpisodeID int `json:"episode_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if request.SeriesID <= 0 || request.EpisodeID <= 0 {
+		http.Error(w, "invalid series or episode id", http.StatusBadRequest)
+		return
+	}
+
+	show, err := s.store.GetSeries(ctx, request.SeriesID)
+	if err != nil || show == nil {
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		} else {
+			http.Error(w, "series not found", http.StatusNotFound)
+		}
+		return
+	}
+
+	episode, err := s.store.GetEpisode(ctx, request.EpisodeID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if episode == nil || episode.SeriesID != request.SeriesID {
+		http.Error(w, "episode not found", http.StatusNotFound)
+		return
+	}
+	err = catalog.EnqueueEpisode(ctx, s.store, s.enqueueCfg, *show, *episode)
+	if err != nil {
+		if errors.Is(err, store.ErrAlreadyQueued) {
+			w.WriteHeader(http.StatusConflict)
+			writeJSON(w, map[string]any{"status": "already_queued", "queued": true})
+			return
+		}
+		http.Error(w, "episode could not be queued", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+	writeJSON(w, map[string]any{"status": "queued", "queued": true})
+}
+
+func (s *Server) handleRemoveEpisodeFromQueue(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	id, err := strconv.Atoi(r.URL.Query().Get("id"))
+	if err != nil || id <= 0 {
+		http.Error(w, "invalid episode id", http.StatusBadRequest)
+		return
+	}
+	status, err := s.store.RemoveQueuedJobBySource(ctx, "episode", id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"status": "cancelled", "queued": false, "previous_status": status})
+}
+
+func (s *Server) handleSeasonQueueStatus(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	seriesID, err := strconv.Atoi(r.URL.Query().Get("series_id"))
+	season, err2 := strconv.Atoi(r.URL.Query().Get("season"))
+	if err != nil || err2 != nil || seriesID <= 0 || season < 0 {
+		http.Error(w, "invalid series or season", http.StatusBadRequest)
+		return
+	}
+	episodes, err := s.store.ListEpisodes(ctx, seriesID, season)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	queued := 0
+	for _, episode := range episodes {
+		status, err := s.store.GetQueuedJobStatus(ctx, "episode", episode.EpisodeID)
+		if err == nil && status != "" {
+			queued++
+		}
+	}
+	writeJSON(w, map[string]any{
+		"queued":        queued > 0,
+		"queued_count":  queued,
+		"episode_count": len(episodes),
+	})
+}
+
+func (s *Server) handleQueueSeason(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var request struct {
+		SeriesID int `json:"series_id"`
+		Season   int `json:"season"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if request.SeriesID <= 0 || request.Season < 0 {
+		http.Error(w, "invalid series or season", http.StatusBadRequest)
+		return
+	}
+	show, err := s.store.GetSeries(ctx, request.SeriesID)
+	if err != nil || show == nil {
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		} else {
+			http.Error(w, "series not found", http.StatusNotFound)
+		}
+		return
+	}
+	count, err := catalog.EnqueueSeason(ctx, s.store, s.enqueueCfg, *show, request.Season)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+	writeJSON(w, map[string]any{"status": "queued", "queued": true, "queued_count": count})
+}
+
+func (s *Server) handleRemoveSeasonFromQueue(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	seriesID, err := strconv.Atoi(r.URL.Query().Get("series_id"))
+	season, err2 := strconv.Atoi(r.URL.Query().Get("season"))
+	if err != nil || err2 != nil || seriesID <= 0 || season < 0 {
+		http.Error(w, "invalid series or season", http.StatusBadRequest)
+		return
+	}
+	cancelled, err := s.store.RemoveQueuedEpisodeJobsForSeason(ctx, seriesID, season)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"status": "cancelled", "queued": false, "cancelled_count": cancelled})
+}
+
+func (s *Server) handleSeriesQueueStatus(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	seriesID, err := strconv.Atoi(r.URL.Query().Get("id"))
+	if err != nil || seriesID <= 0 {
+		http.Error(w, "invalid series id", http.StatusBadRequest)
+		return
+	}
+
+	seasons, err := s.store.ListSeasons(ctx, seriesID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	queuedCount := 0
+	episodeCount := 0
+	for _, season := range seasons {
+		seasonEpisodes, err := s.store.ListEpisodes(ctx, seriesID, season.SeasonNumber)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		episodeCount += len(seasonEpisodes)
+		for _, episode := range seasonEpisodes {
+			status, err := s.store.GetQueuedJobStatus(ctx, "episode", episode.EpisodeID)
+			if err == nil && status != "" {
+				queuedCount++
+			}
+		}
+	}
+	writeJSON(w, map[string]any{
+		"queued":        queuedCount > 0,
+		"queued_count":  queuedCount,
+		"episode_count": episodeCount,
+	})
+}
+
+func (s *Server) handleQueueSeries(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+
+	var request struct {
+		SeriesID int `json:"series_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if request.SeriesID <= 0 {
+		http.Error(w, "invalid series id", http.StatusBadRequest)
+		return
+	}
+
+	show, err := s.store.GetSeries(ctx, request.SeriesID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if show == nil {
+		http.Error(w, "series not found", http.StatusNotFound)
+		return
+	}
+
+	count, err := catalog.EnqueueSeries(ctx, s.store, s.xtream, s.enqueueCfg, *show)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+	writeJSON(w, map[string]any{
+		"status":       "queued",
+		"queued":       true,
+		"queued_count": count,
+	})
+}
+
+func (s *Server) handleRemoveSeriesFromQueue(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+
+	seriesID, err := strconv.Atoi(r.URL.Query().Get("id"))
+	if err != nil || seriesID <= 0 {
+		http.Error(w, "invalid series id", http.StatusBadRequest)
+		return
+	}
+	cancelled, err := s.store.RemoveQueuedEpisodeJobsForSeries(ctx, seriesID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"status":          "cancelled",
+		"queued":          false,
+		"cancelled_count": cancelled,
 	})
 }
 
@@ -475,6 +762,168 @@ func (s *Server) handleEpisodes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"episodes": episodes,
 	})
+}
+
+func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	statuses := make([]string, 0)
+	if value := strings.TrimSpace(r.URL.Query().Get("status")); value != "" {
+		for _, status := range strings.Split(value, ",") {
+			status = strings.TrimSpace(status)
+			switch status {
+			case "pending", "active", "completed", "failed", "cancelled":
+				statuses = append(statuses, status)
+			default:
+				http.Error(w, "invalid job status", http.StatusBadRequest)
+				return
+			}
+		}
+	}
+
+	jobs, err := s.store.ListJobs(ctx, statuses...)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	items := make([]map[string]any, 0, len(jobs))
+	for _, job := range jobs {
+		name := strings.TrimSuffix(filepath.Base(job.DestPath), filepath.Ext(job.DestPath))
+		if name == "" || name == "." {
+			name = fmt.Sprintf("%s #%d", job.Kind, job.SourceID)
+		}
+		item := map[string]any{
+			"id":             job.ID,
+			"kind":           job.Kind,
+			"source_id":      job.SourceID,
+			"name":           name,
+			"status":         job.Status,
+			"dest_path":      job.DestPath,
+			"progress_bytes": job.ProgressBytes,
+			"total_bytes":    job.TotalBytes,
+			"attempts":       job.Attempts,
+			"last_error":     job.LastError,
+			"created_at":     job.CreatedAt,
+			"started_at":     job.StartedAt,
+			"completed_at":   job.CompletedAt,
+			"series_id":      job.SeriesID,
+			"season":         job.SeasonNumber,
+			"episode_number": job.EpisodeNumber,
+		}
+		if job.Kind == "episode" {
+			if job.SeriesID != 0 {
+				item["series_id"] = job.SeriesID
+				item["season"] = job.SeasonNumber
+				item["episode_number"] = job.EpisodeNumber
+			}
+			episode, err := s.store.GetEpisode(ctx, job.SourceID)
+			if err == nil && episode != nil {
+				item["series_id"] = episode.SeriesID
+				item["season"] = episode.SeasonNumber
+				item["episode_number"] = episode.EpisodeNum
+				item["episode_title"] = episode.Title
+				if show, err := s.store.GetSeries(ctx, episode.SeriesID); err == nil && show != nil {
+					item["series_name"] = show.Name
+				}
+			}
+		}
+		items = append(items, item)
+	}
+
+	writeJSON(w, map[string]any{"jobs": items})
+}
+
+func jobIDFromRequest(r *http.Request) (int64, error) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		return 0, fmt.Errorf("invalid job id")
+	}
+	return id, nil
+}
+
+func (s *Server) handleRetryJob(w http.ResponseWriter, r *http.Request) {
+	id, err := jobIDFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	status, err := s.store.GetJobStatus(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if status == "" {
+		http.Error(w, "job not found", http.StatusNotFound)
+		return
+	}
+	if status != "failed" {
+		http.Error(w, "only failed jobs can be retried", http.StatusConflict)
+		return
+	}
+	if err := s.store.RetryFailedJob(r.Context(), id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"status": "pending", "message": "Auftrag wurde erneut eingereiht."})
+}
+
+func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
+	id, err := jobIDFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	status, err := s.store.GetJobStatus(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if status == "" {
+		http.Error(w, "job not found", http.StatusNotFound)
+		return
+	}
+	if status != "pending" && status != "active" {
+		http.Error(w, "only pending or active jobs can be cancelled", http.StatusConflict)
+		return
+	}
+	if err := s.store.CancelJob(r.Context(), id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"status": "cancelled", "message": "Auftrag wurde abgebrochen."})
+}
+
+func (s *Server) handleDeleteJob(w http.ResponseWriter, r *http.Request) {
+	id, err := jobIDFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	status, err := s.store.GetJobStatus(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if status == "" {
+		http.Error(w, "job not found", http.StatusNotFound)
+		return
+	}
+	if status == "pending" || status == "active" {
+		if err := s.store.CancelJob(r.Context(), id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if err := s.store.DeleteJob(r.Context(), id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"status": "deleted", "message": "Auftrag wurde entfernt."})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

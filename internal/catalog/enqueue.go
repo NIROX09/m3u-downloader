@@ -73,7 +73,7 @@ func EnqueueVOD(ctx context.Context, st *store.Store, cfg EnqueueConfig, v store
 
 func EnqueueEpisode(ctx context.Context, st *store.Store, cfg EnqueueConfig, show store.SeriesRow, e store.EpisodeRow) error {
 	dest := plex.EpisodePath(cfg.SeriesDir, show.Name, e.SeasonNumber, e.EpisodeNum)
-	_, err := st.EnqueueJob(ctx, "episode", e.EpisodeID, dest)
+	_, err := st.EnqueueEpisodeJob(ctx, dest, e)
 	return err
 }
 

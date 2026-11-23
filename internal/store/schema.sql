@@ -55,6 +55,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   kind            TEXT NOT NULL CHECK(kind IN ('vod','episode')),
   source_id       INTEGER NOT NULL,
+  series_id       INTEGER,
+  season_number   INTEGER,
+  episode_number  INTEGER,
   status          TEXT NOT NULL CHECK(status IN
                     ('pending','active','completed','failed','cancelled')),
   dest_path       TEXT,

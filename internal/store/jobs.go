@@ -18,6 +18,9 @@ type JobRow struct {
 	ID            int64
 	Kind          string
 	SourceID      int
+	SeriesID      int
+	SeasonNumber  int
+	EpisodeNumber int
 	Status        string
 	DestPath      string
 	ProgressBytes int64
@@ -37,6 +40,24 @@ func (s *Store) EnqueueJob(ctx context.Context, kind string, sourceID int, destP
 	if err != nil {
 		// modernc.org/sqlite reports unique-violation as a string match in
 		// the error text — there's no typed sentinel we can errors.Is on.
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return 0, ErrAlreadyQueued
+		}
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (s *Store) EnqueueEpisodeJob(ctx context.Context, destPath string, episode EpisodeRow) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO jobs(
+			kind,source_id,status,dest_path,series_id,season_number,episode_number,created_at
+		)
+		VALUES('episode',?,?,?,?,?,?,?)`,
+		episode.EpisodeID, "pending", destPath,
+		episode.SeriesID, episode.SeasonNumber, episode.EpisodeNum,
+		time.Now().Unix())
+	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
 			return 0, ErrAlreadyQueued
 		}
@@ -102,11 +123,15 @@ func (s *Store) ClaimNext(ctx context.Context) (*JobRow, error) {
 	}
 	defer tx.Rollback()
 	row := tx.QueryRowContext(ctx, `
-		SELECT id, kind, source_id, COALESCE(dest_path,''), attempts
+		SELECT id, kind, source_id, COALESCE(dest_path,''), attempts,
+		       COALESCE(series_id,0), COALESCE(season_number,0), COALESCE(episode_number,0)
 		FROM jobs WHERE status='pending'
 		ORDER BY created_at ASC LIMIT 1`)
 	var j JobRow
-	if err := row.Scan(&j.ID, &j.Kind, &j.SourceID, &j.DestPath, &j.Attempts); err != nil {
+	if err := row.Scan(
+		&j.ID, &j.Kind, &j.SourceID, &j.DestPath, &j.Attempts,
+		&j.SeriesID, &j.SeasonNumber, &j.EpisodeNumber,
+	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -215,7 +240,8 @@ func (s *Store) ListJobs(ctx context.Context, statuses ...string) ([]JobRow, err
 	}
 	q := `SELECT id,kind,source_id,status,COALESCE(dest_path,''),
 	             progress_bytes,COALESCE(total_bytes,0),attempts,COALESCE(last_error,''),
-	             created_at,started_at,completed_at
+	             created_at,started_at,completed_at,
+	             COALESCE(series_id,0),COALESCE(season_number,0),COALESCE(episode_number,0)
 	      FROM jobs WHERE status IN (`
 	args := make([]any, 0, len(statuses))
 	for i, s := range statuses {
@@ -239,7 +265,8 @@ func (s *Store) ListJobs(ctx context.Context, statuses ...string) ([]JobRow, err
 		var j JobRow
 		if err := rows.Scan(&j.ID, &j.Kind, &j.SourceID, &j.Status, &j.DestPath,
 			&j.ProgressBytes, &j.TotalBytes, &j.Attempts, &j.LastError,
-			&j.CreatedAt, &j.StartedAt, &j.CompletedAt); err != nil {
+			&j.CreatedAt, &j.StartedAt, &j.CompletedAt,
+			&j.SeriesID, &j.SeasonNumber, &j.EpisodeNumber); err != nil {
 			return nil, err
 		}
 		out = append(out, j)
@@ -313,4 +340,52 @@ func (s *Store) RemoveQueuedJobBySource(ctx context.Context, kind string, source
 	}
 
 	return status, nil
+}
+
+// RemoveQueuedEpisodeJobsForSeries cancels every pending or active episode job
+// belonging to a series. It is based on the episode cache, not on stored season
+// objects, so partially cached or cached-out series data is handled correctly.
+func (s *Store) RemoveQueuedEpisodeJobsForSeries(ctx context.Context, seriesID int) (int, error) {
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM jobs
+		WHERE kind='episode'
+		  AND (
+		      series_id=? OR
+		      source_id IN (SELECT episode_id FROM episodes WHERE series_id=?)
+		  )`,
+		seriesID, seriesID)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return int(affected), nil
+}
+
+// RemoveQueuedEpisodeJobsForSeason cancels every pending or active episode job
+// belonging to one season of a series.
+func (s *Store) RemoveQueuedEpisodeJobsForSeason(ctx context.Context, seriesID, seasonNumber int) (int, error) {
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM jobs
+		WHERE kind='episode'
+		  AND (
+		      (series_id=? AND season_number=?)
+		      OR
+		      source_id IN (
+		          SELECT episode_id
+		          FROM episodes
+		          WHERE series_id=? AND season_number=?
+		      )
+		  )`,
+		seriesID, seasonNumber, seriesID, seasonNumber)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return int(affected), nil
 }

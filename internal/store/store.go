@@ -47,6 +47,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate series details: %w", err)
 	}
+	if err := migrateJobEpisodeMetadata(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate job episode metadata: %w", err)
+	}
 
 	return &Store{db: db}, nil
 }
@@ -97,3 +101,55 @@ func migrateSeriesDetails(db *sql.DB) error {
 
 func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) DB() *sql.DB  { return s.db }
+
+func migrateJobEpisodeMetadata(db *sql.DB) error {
+	columns := map[string]bool{}
+	rows, err := db.Query(`PRAGMA table_info(jobs)`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			colType    string
+			notNull    int
+			defaultV   sql.NullString
+			primaryKey int
+		)
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultV, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, column := range []string{"series_id", "season_number", "episode_number"} {
+		if columns[column] {
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE jobs ADD COLUMN ` + column + ` INTEGER`); err != nil {
+			return err
+		}
+	}
+
+	_, err = db.Exec(`
+		UPDATE jobs
+		SET series_id=(
+				SELECT e.series_id FROM episodes e WHERE e.episode_id=jobs.source_id
+			),
+			season_number=(
+				SELECT e.season_number FROM episodes e WHERE e.episode_id=jobs.source_id
+			),
+			episode_number=(
+				SELECT e.episode_num FROM episodes e WHERE e.episode_id=jobs.source_id
+			)
+		WHERE kind='episode'
+		  AND (series_id IS NULL OR season_number IS NULL OR episode_number IS NULL)`)
+	return err
+}
