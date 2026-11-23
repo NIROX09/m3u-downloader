@@ -6,6 +6,8 @@ package catalog
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/Thiritin/m3u-downloader/internal/store"
 	"github.com/Thiritin/m3u-downloader/internal/xtream"
@@ -57,10 +59,11 @@ func FullSync(ctx context.Context, st *store.Store, xc *xtream.Client, progress 
 		fmt.Sscanf(v.CategoryID, "%d", &catID)
 		year := 0
 		fmt.Sscanf(v.Year, "%d", &year)
+		rating, _ := strconv.ParseFloat(strings.TrimSpace(string(v.Rating)), 64)
 		vodRows = append(vodRows, store.VODRow{
 			StreamID: v.StreamID, CategoryID: catID, Name: v.Name,
 			Year: year, Plot: v.Plot, StreamIcon: v.StreamIcon,
-			ContainerExt: v.ContainerExtension,
+			ContainerExt: v.ContainerExtension, Rating: rating,
 		})
 	}
 	if err := st.UpsertVODs(ctx, vodRows); err != nil {

@@ -1,5 +1,46 @@
 package xtream
 
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+)
+
+// FlexibleString accepts JSON strings, numbers, and null values.
+// This is useful for IPTV providers that return rating as either "8.5" or 8.5.
+type FlexibleString string
+
+func (s *FlexibleString) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+
+	if bytes.Equal(data, []byte("null")) {
+		*s = ""
+		return nil
+	}
+
+	var str string
+	if err := json.Unmarshal(data, &str); err == nil {
+		*s = FlexibleString(str)
+		return nil
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return fmt.Errorf("rating must be a string or number: %w", err)
+	}
+
+	switch v := value.(type) {
+	case json.Number:
+		*s = FlexibleString(v.String())
+		return nil
+	default:
+		return fmt.Errorf("rating must be a string or number, got %T", value)
+	}
+}
+
 // Category is shared across live/vod/series — only `type` differs.
 type Category struct {
 	CategoryID   string `json:"category_id"`
@@ -8,18 +49,16 @@ type Category struct {
 }
 
 // VOD represents a movie entry from get_vod_streams.
-// Rating stays a string because the provider returns "" for missing values,
-// which json.Number rejects.
 type VOD struct {
-	StreamID           int    `json:"stream_id"`
-	Name               string `json:"name"`
-	StreamIcon         string `json:"stream_icon"`
-	Rating             string `json:"rating"`
-	Year               string `json:"year"`
-	Added              string `json:"added"`
-	CategoryID         string `json:"category_id"`
-	ContainerExtension string `json:"container_extension"`
-	Plot               string `json:"plot"`
+	StreamID           int            `json:"stream_id"`
+	Name               string         `json:"name"`
+	StreamIcon         string         `json:"stream_icon"`
+	Rating             FlexibleString `json:"rating"`
+	Year               string         `json:"year"`
+	Added              string         `json:"added"`
+	CategoryID         string         `json:"category_id"`
+	ContainerExtension string         `json:"container_extension"`
+	Plot               string         `json:"plot"`
 }
 
 // SeriesListing is what get_series returns: the show, not its seasons.

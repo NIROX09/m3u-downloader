@@ -246,3 +246,71 @@ func (s *Store) ListJobs(ctx context.Context, statuses ...string) ([]JobRow, err
 	}
 	return out, rows.Err()
 }
+
+// GetQueuedJobStatus returns the status of a pending or active job
+// for the given source. An empty status means that no such job exists.
+func (s *Store) GetQueuedJobStatus(ctx context.Context, kind string, sourceID int) (string, error) {
+	var status string
+
+	err := s.db.QueryRowContext(ctx, `
+        SELECT status
+        FROM jobs
+        WHERE kind = ?
+          AND source_id = ?
+          AND status IN ('pending', 'active')
+        ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END
+        LIMIT 1
+    `, kind, sourceID).Scan(&status)
+
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+
+	return status, err
+}
+
+// RemoveQueuedJobBySource cancels a pending or active job for the given source.
+// Pending jobs are also marked cancelled so that a worker cannot claim them.
+func (s *Store) RemoveQueuedJobBySource(ctx context.Context, kind string, sourceID int) (string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+
+	var status string
+
+	err = tx.QueryRowContext(ctx, `
+        SELECT status
+        FROM jobs
+        WHERE kind = ?
+          AND source_id = ?
+          AND status IN ('pending', 'active')
+        LIMIT 1
+    `, kind, sourceID).Scan(&status)
+
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+
+	_, err = tx.ExecContext(ctx, `
+        UPDATE jobs
+        SET status = 'cancelled',
+            completed_at = ?
+        WHERE kind = ?
+          AND source_id = ?
+          AND status IN ('pending', 'active')
+    `, time.Now().Unix(), kind, sourceID)
+	if err != nil {
+		return "", err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+
+	return status, nil
+}

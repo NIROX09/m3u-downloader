@@ -18,6 +18,7 @@ import (
 	"github.com/Thiritin/m3u-downloader/internal/service"
 	"github.com/Thiritin/m3u-downloader/internal/store"
 	"github.com/Thiritin/m3u-downloader/internal/tui"
+	"github.com/Thiritin/m3u-downloader/internal/web"
 	"github.com/Thiritin/m3u-downloader/internal/worker"
 	"github.com/Thiritin/m3u-downloader/internal/xtream"
 )
@@ -31,6 +32,7 @@ Subcommands:
   config               Print active config (with secrets redacted)
   install-service      Install launchd agent
   uninstall-service    Remove launchd agent
+    web                Start the browser-based media manager
 `
 
 func main() {
@@ -43,6 +45,8 @@ func main() {
 	switch cmd {
 	case "tui":
 		exit(runTUI(args))
+	case "web":
+		exit(runWeb(args))
 	case "worker":
 		exit(runWorker(args))
 	case "sync":
@@ -115,6 +119,20 @@ func runTUI(_ []string) error {
 	}
 	defer st.Close()
 	return tui.New(st, xc, cfg.Output.MoviesDir, cfg.Output.SeriesDir).Run()
+}
+func runWeb(_ []string) error {
+	cfg, st, xc, err := loadAll()
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	enqueueCfg := catalog.EnqueueConfig{
+		MoviesDir: cfg.Output.MoviesDir,
+		SeriesDir: cfg.Output.SeriesDir,
+	}
+
+	return web.New(st, xc, enqueueCfg).ListenAndServe("127.0.0.1:8765")
 }
 
 func runWorker(_ []string) error {

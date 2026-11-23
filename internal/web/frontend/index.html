@@ -1,0 +1,1524 @@
+
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Plex Media Manager</title>
+
+    <style>
+        * { box-sizing: border-box; }
+
+        :root {
+            --background: #10131a;
+            --surface: #191e29;
+            --surface-light: #222a38;
+            --border: #2a3040;
+            --text: #e8eaf0;
+            --muted: #929bad;
+            --accent: #43a5f5;
+            --green: #43c98b;
+        }
+
+        body {
+            margin: 0;
+            background: var(--background);
+            color: var(--text);
+            font-family: "Segoe UI", Arial, sans-serif;
+        }
+
+        header {
+            padding: 20px 32px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+        }
+
+        header h1 { margin: 0; font-size: 23px; }
+
+        header p {
+            color: var(--muted);
+            margin: 6px 0 0;
+            font-size: 13px;
+        }
+
+        nav {
+            display: flex;
+            gap: 8px;
+            padding: 12px 32px;
+            background: #151923;
+            border-bottom: 1px solid var(--border);
+            overflow-x: auto;
+        }
+
+        nav button {
+            border: 0;
+            background: transparent;
+            color: var(--muted);
+            padding: 11px 16px;
+            border-radius: 7px;
+            cursor: pointer;
+            font-size: 14px;
+            white-space: nowrap;
+        }
+
+        nav button:hover,
+        nav button.active {
+            background: var(--surface-light);
+            color: var(--text);
+        }
+
+        nav button.active {
+            box-shadow: inset 0 -2px var(--accent);
+        }
+
+        main {
+            max-width: 1500px;
+            margin: 30px auto;
+            padding: 0 28px;
+        }
+
+        h2 { font-size: 20px; margin: 0 0 20px; }
+        h3 { font-size: 16px; margin: 0 0 14px; }
+
+        .page { display: none; }
+        .page.active { display: block; }
+
+        .status {
+            display: inline-flex;
+            align-items: center;
+            gap: 9px;
+            padding: 10px 14px;
+            background: #1c2630;
+            border-radius: 8px;
+            margin-bottom: 28px;
+            font-size: 13px;
+        }
+
+        .dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            background: #e0a43b;
+        }
+
+        .dot.online { background: var(--green); }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+            gap: 16px;
+        }
+
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 22px;
+        }
+
+        .card span { color: var(--muted); font-size: 13px; }
+
+        .card strong {
+            display: block;
+            font-size: 30px;
+            margin-top: 12px;
+        }
+
+        .section { margin-top: 38px; }
+
+        .muted { color: var(--muted); font-size: 13px; }
+
+        .catalog-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-bottom: 22px;
+        }
+
+        .catalog-toolbar input,
+        .catalog-toolbar select,
+        .detail-select {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: 8px;
+            padding: 12px 14px;
+            font-size: 14px;
+            min-width: 180px;
+        }
+
+        .catalog-toolbar input { flex: 1; min-width: 240px; }
+        .catalog-toolbar select { cursor: pointer; }
+
+        .catalog-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 18px;
+        }
+
+        .media-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(155px, 1fr));
+            gap: 22px 16px;
+        }
+
+        .media-card {
+            min-width: 0;
+            cursor: pointer;
+            outline: none;
+        }
+
+        .poster {
+            width: 100%;
+            aspect-ratio: 2 / 3;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 9px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .poster img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+            transition: transform 0.2s ease;
+        }
+
+        .media-card:hover .poster img,
+        .media-card:focus .poster img {
+            transform: scale(1.04);
+        }
+
+        .media-card:hover .poster,
+        .media-card:focus .poster {
+            border-color: var(--accent);
+        }
+
+        .poster-placeholder {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--muted);
+            font-size: 42px;
+        }
+
+        .media-title {
+            font-size: 14px;
+            font-weight: 600;
+            margin-top: 10px;
+            line-height: 1.4;
+            overflow: hidden;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            line-clamp: 2;
+            -webkit-box-orient: vertical;
+        }
+
+        .media-meta {
+            font-size: 12px;
+            color: var(--muted);
+            margin-top: 5px;
+        }
+
+        .pagination {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 14px;
+            margin: 30px 0;
+        }
+
+        button.action {
+            background: var(--surface-light);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 7px;
+            padding: 10px 16px;
+            cursor: pointer;
+        }
+
+        button.action:hover:not(:disabled) { background: #303b4d; }
+
+        button.action:disabled {
+            opacity: 0.35;
+            cursor: not-allowed;
+        }
+
+        .empty {
+            padding: 45px 20px;
+            text-align: center;
+            color: var(--muted);
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+        }
+
+        .error {
+            color: #ff8585;
+            padding: 15px;
+            background: #321e25;
+            border-radius: 8px;
+            margin-bottom: 18px;
+        }
+
+        /* Detailansicht */
+
+        .detail-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 1000;
+            background: rgba(0, 0, 0, 0.82);
+            overflow-y: auto;
+            padding: 35px 18px;
+        }
+
+        .detail-overlay.open {
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+        }
+
+        .detail-panel {
+            position: relative;
+            width: 100%;
+            max-width: 1050px;
+            min-height: 300px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            overflow: hidden;
+            box-shadow: 0 20px 70px rgba(0, 0, 0, 0.5);
+        }
+
+        .detail-close {
+            position: absolute;
+            z-index: 5;
+            top: 14px;
+            right: 14px;
+            width: 40px;
+            height: 40px;
+            border: 1px solid var(--border);
+            border-radius: 50%;
+            background: rgba(16, 19, 26, 0.9);
+            color: white;
+            font-size: 23px;
+            cursor: pointer;
+        }
+
+        .detail-close:hover { background: #394456; }
+
+        .detail-content { padding: 30px; }
+
+        .detail-hero {
+            display: grid;
+            grid-template-columns: 230px 1fr;
+            gap: 30px;
+        }
+
+        .detail-poster {
+            width: 100%;
+            aspect-ratio: 2 / 3;
+            object-fit: cover;
+            border-radius: 10px;
+            background: var(--surface-light);
+            border: 1px solid var(--border);
+        }
+
+        .detail-heading {
+            padding: 8px 45px 0 0;
+        }
+
+        .detail-heading h2 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .detail-meta {
+            color: var(--muted);
+            font-size: 13px;
+            margin-bottom: 20px;
+        }
+
+        .detail-description {
+            color: #c5cbd6;
+            font-size: 14px;
+            line-height: 1.7;
+            white-space: pre-line;
+        }
+
+        .detail-section {
+            margin-top: 30px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border);
+        }
+
+        .detail-facts {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .detail-fact {
+            background: var(--surface-light);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 10px 13px;
+            font-size: 13px;
+        }
+
+        .detail-fact span {
+            color: var(--muted);
+            display: block;
+            font-size: 11px;
+            margin-bottom: 4px;
+        }
+
+        /* Download-Warteschlange */
+
+        .queue-section {
+            margin-top: 30px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border);
+        }
+
+        .queue-button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 9px;
+            background: var(--accent);
+            color: #ffffff;
+            border: 0;
+            border-radius: 8px;
+            padding: 13px 20px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s ease;
+        }
+
+        .queue-button:hover:not(:disabled) {
+            background: #2588d8;
+        }
+
+        .queue-button:disabled {
+            opacity: 0.6;
+            cursor: wait;
+        }
+
+        .queue-message {
+            margin-top: 13px;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .queue-message.success {
+            color: var(--green);
+        }
+
+        .queue-message.info {
+            color: #e0b45c;
+        }
+
+        .queue-message.error {
+            color: #ff8585;
+            padding: 10px 12px;
+            background: #321e25;
+            border-radius: 7px;
+        }
+
+        .season-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 18px;
+        }
+
+        .season-toolbar label {
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .episode-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .episode-item {
+            background: var(--surface-light);
+            border: 1px solid var(--border);
+            border-radius: 9px;
+            padding: 15px;
+        }
+
+        .episode-title {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 6px;
+        }
+
+        .episode-description {
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .detail-loading {
+            padding: 55px 20px;
+            text-align: center;
+            color: var(--muted);
+        }
+
+        @media (max-width: 650px) {
+            header { padding: 18px 20px; }
+            nav { padding: 10px 14px; }
+            main { padding: 0 16px; margin-top: 24px; }
+
+            .media-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 18px 12px;
+            }
+
+            .catalog-toolbar input,
+            .catalog-toolbar select {
+                width: 100%;
+                min-width: 0;
+            }
+
+            .detail-overlay { padding: 10px; }
+            .detail-content { padding: 20px; }
+
+            .detail-hero {
+                grid-template-columns: 110px 1fr;
+                gap: 16px;
+            }
+
+            .detail-heading { padding: 5px 35px 0 0; }
+            .detail-heading h2 { font-size: 20px; }
+            .detail-description { font-size: 13px; }
+        }
+
+        @media (max-width: 400px) {
+            .detail-hero { grid-template-columns: 1fr; }
+            .detail-poster { width: 140px; }
+        }
+    </style>
+</head>
+
+<body>
+
+<header>
+    <h1>Plex Media Manager</h1>
+    <p>Zentrale Verwaltung deiner Medienbibliothek</p>
+</header>
+
+<nav>
+    <button class="active" data-page="dashboard">Dashboard</button>
+    <button data-page="movies">Filme</button>
+    <button data-page="series">Serien</button>
+    <button data-page="queue">Warteschlange</button>
+</nav>
+
+<main>
+
+    <section class="page active" id="page-dashboard">
+        <div class="status">
+            <span class="dot" id="statusDot"></span>
+            <span id="statusText">Verbindung wird geprüft ...</span>
+        </div>
+
+        <h2>Medienkatalog</h2>
+
+        <div class="grid">
+            <div class="card">
+                <span>Filme (IPTV)</span>
+                <strong id="movies">–</strong>
+            </div>
+            <div class="card">
+                <span>Serien (IPTV)</span>
+                <strong id="series">–</strong>
+            </div>
+            <div class="card">
+                <span>Kategorien</span>
+                <strong id="categories">–</strong>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Download-Warteschlange</h2>
+            <div class="grid">
+                <div class="card"><span>Ausstehend</span><strong id="pending">–</strong></div>
+                <div class="card"><span>Aktiv</span><strong id="active">–</strong></div>
+                <div class="card"><span>Abgeschlossen</span><strong id="completed">–</strong></div>
+                <div class="card"><span>Fehlgeschlagen</span><strong id="failed">–</strong></div>
+            </div>
+        </div>
+
+        <p class="muted" id="updated" style="margin-top:30px"></p>
+    </section>
+
+    <section class="page" id="page-movies">
+        <h2>Filme</h2>
+
+        <div class="catalog-toolbar">
+            <input type="search" id="movieSearch" placeholder="Filme suchen ..." autocomplete="off">
+            <select id="movieCategory">
+                <option value="">Alle Kategorien</option>
+            </select>
+        </div>
+
+        <div class="catalog-info">
+            <span class="muted" id="movieCount">Katalog wird geladen ...</span>
+        </div>
+
+        <div id="movieResults" class="media-grid"></div>
+
+        <div class="pagination">
+            <button class="action" id="moviePrev">Zurück</button>
+            <span class="muted" id="moviePage">Seite 1</span>
+            <button class="action" id="movieNext">Weiter</button>
+        </div>
+    </section>
+
+    <section class="page" id="page-series">
+        <h2>Serien</h2>
+
+        <div class="catalog-toolbar">
+            <input type="search" id="seriesSearch" placeholder="Serien suchen ..." autocomplete="off">
+            <select id="seriesCategory">
+                <option value="">Alle Kategorien</option>
+            </select>
+        </div>
+
+        <div class="catalog-info">
+            <span class="muted" id="seriesCount">Katalog wird geladen ...</span>
+        </div>
+
+        <div id="seriesResults" class="media-grid"></div>
+
+        <div class="pagination">
+            <button class="action" id="seriesPrev">Zurück</button>
+            <span class="muted" id="seriesPage">Seite 1</span>
+            <button class="action" id="seriesNext">Weiter</button>
+        </div>
+    </section>
+
+    <section class="page" id="page-queue">
+        <h2>Download-Warteschlange</h2>
+        <div class="empty">
+            Die Verwaltung der Download-Aufträge ergänzen wir im nächsten Schritt.
+        </div>
+    </section>
+
+</main>
+
+<!-- Detailansicht -->
+<div class="detail-overlay" id="detailOverlay" aria-hidden="true">
+    <div class="detail-panel" role="dialog" aria-modal="true" aria-label="Mediendetails">
+        <button class="detail-close" id="detailClose" aria-label="Schließen">×</button>
+        <div class="detail-content" id="detailContent">
+            <div class="detail-loading">Details werden geladen ...</div>
+        </div>
+    </div>
+</div>
+
+<script>
+const PAGE_SIZE = 50;
+
+const catalogState = {
+    movies: {
+        type: "vod",
+        page: 1,
+        totalPages: 1,
+        query: "",
+        category: "",
+        loaded: false,
+        loading: false
+    },
+    series: {
+        type: "series",
+        page: 1,
+        totalPages: 1,
+        query: "",
+        category: "",
+        loaded: false,
+        loading: false
+    }
+};
+
+let searchTimers = {};
+let currentDetailRequest = 0;
+
+
+async function api(url) {
+    const response = await fetch(url);
+
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    return await response.json();
+}
+
+// Film zur Download-Warteschlange hinzufügen
+function setMovieQueueButton(button, queued, status = "") {
+    button.dataset.queued = queued ? "true" : "false";
+    button.disabled = false;
+
+    if (queued) {
+        button.textContent = "✕ Aus der Download-Warteschlange entfernen";
+        button.title = status === "active"
+            ? "Download läuft gerade"
+            : "Film ist noch nicht gestartet";
+    } else {
+        button.textContent = "⬇ Zur Download-Warteschlange hinzufügen";
+        button.title = "";
+    }
+}
+
+
+// Aktuellen Warteschlangenstatus eines Films laden
+async function refreshMovieQueueState(movieID, button, messageElement) {
+    button.disabled = true;
+    button.textContent = "Warteschlangenstatus wird geprüft ...";
+
+    try {
+        const response = await fetch(
+            `/api/queue/movie?id=${encodeURIComponent(movieID)}`
+        );
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        setMovieQueueButton(button, data.queued, data.status);
+
+    } catch (error) {
+        console.error("Warteschlangenstatus konnte nicht geladen werden:", error);
+
+        button.disabled = false;
+        button.textContent = "Warteschlangenstatus erneut prüfen";
+
+        messageElement.textContent =
+            "Der Warteschlangenstatus konnte nicht geladen werden.";
+
+        messageElement.className = "queue-message error";
+    }
+}
+
+
+// Film einreihen oder aus der Warteschlange entfernen
+async function toggleMovieQueue(movieID, button, messageElement) {
+    if (!movieID || Number(movieID) <= 0) {
+        messageElement.textContent = "Ungültige Film-ID.";
+        messageElement.className = "queue-message error";
+        return;
+    }
+
+    const currentlyQueued = button.dataset.queued === "true";
+
+    button.disabled = true;
+    button.textContent = currentlyQueued
+        ? "Wird aus der Warteschlange entfernt ..."
+        : "Wird eingereiht ...";
+
+    messageElement.textContent = "";
+    messageElement.className = "queue-message";
+
+    try {
+        let response;
+
+        if (currentlyQueued) {
+            response = await fetch(
+                `/api/queue/movie?id=${encodeURIComponent(movieID)}`,
+                { method: "DELETE" }
+            );
+        } else {
+            response = await fetch("/api/queue/movie", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    id: Number(movieID)
+                })
+            });
+        }
+
+        let data = {};
+
+        try {
+            data = await response.json();
+        } catch {
+            data = {};
+        }
+
+        if (response.status === 409 && !currentlyQueued) {
+            setMovieQueueButton(button, true, "pending");
+
+            messageElement.textContent =
+                data.message || "Dieser Film befindet sich bereits in der Warteschlange.";
+
+            messageElement.className = "queue-message info";
+            return;
+        }
+
+        if (!response.ok) {
+            throw new Error(
+                data.message || data.error || `HTTP ${response.status}`
+            );
+        }
+
+        if (currentlyQueued) {
+            setMovieQueueButton(button, false);
+
+            messageElement.textContent =
+                data.message || "Film wurde aus der Warteschlange entfernt.";
+
+            messageElement.className = "queue-message success";
+        } else {
+            setMovieQueueButton(button, true, "pending");
+
+            messageElement.textContent =
+                data.message || "Film wurde zur Download-Warteschlange hinzugefügt.";
+
+            messageElement.className = "queue-message success";
+        }
+
+        loadDashboard();
+
+    } catch (error) {
+        console.error("Warteschlangenaktion fehlgeschlagen:", error);
+
+        messageElement.textContent =
+            `Fehler: ${error.message}`;
+
+        messageElement.className = "queue-message error";
+
+        // Tatsächlichen Status erneut vom Server abrufen.
+        await refreshMovieQueueState(movieID, button, messageElement);
+
+    } finally {
+        button.disabled = false;
+    }
+}
+
+// Navigation
+document.querySelectorAll("nav button").forEach(button => {
+    button.addEventListener("click", () => {
+        const page = button.dataset.page;
+
+        document.querySelectorAll("nav button").forEach(item => {
+            item.classList.toggle("active", item === button);
+        });
+
+        document.querySelectorAll(".page").forEach(item => {
+            item.classList.remove("active");
+        });
+
+        document.getElementById(`page-${page}`).classList.add("active");
+
+        if (page === "movies") loadCatalog("movies");
+        if (page === "series") loadCatalog("series");
+    });
+});
+
+
+// Dashboard
+async function loadDashboard() {
+    try {
+        await api("/api/health");
+
+        document.getElementById("statusDot").classList.add("online");
+        document.getElementById("statusText").textContent =
+            "Webserver und Datenbank verbunden";
+
+        const data = await api("/api/dashboard");
+
+        document.getElementById("movies").textContent =
+            Number(data.catalog.movies || 0).toLocaleString("de-DE");
+
+        document.getElementById("series").textContent =
+            Number(data.catalog.series || 0).toLocaleString("de-DE");
+
+        document.getElementById("categories").textContent =
+            Number(data.catalog.categories || 0).toLocaleString("de-DE");
+
+        document.getElementById("pending").textContent = data.jobs.pending ?? 0;
+        document.getElementById("active").textContent = data.jobs.active ?? 0;
+        document.getElementById("completed").textContent = data.jobs.completed ?? 0;
+        document.getElementById("failed").textContent = data.jobs.failed ?? 0;
+
+        document.getElementById("updated").textContent =
+            "Zuletzt aktualisiert: " + new Date().toLocaleTimeString("de-DE");
+
+    } catch (error) {
+        document.getElementById("statusDot").classList.remove("online");
+        document.getElementById("statusText").textContent = error.message;
+    }
+}
+
+
+// Kategorien laden
+async function loadCategories(view) {
+    const state = catalogState[view];
+    const select = document.getElementById(
+        view === "movies" ? "movieCategory" : "seriesCategory"
+    );
+
+    try {
+        const data = await api(`/api/categories?type=${state.type}`);
+
+        const categories = Array.isArray(data)
+            ? data
+            : (data.categories || data.items || []);
+
+        select.innerHTML = '<option value="">Alle Kategorien</option>';
+
+        categories.forEach(category => {
+            const option = document.createElement("option");
+            option.value = category.ID ?? category.id;
+            option.textContent = category.Name ?? category.name;
+            select.appendChild(option);
+        });
+
+    } catch (error) {
+        console.error("Kategorien konnten nicht geladen werden:", error);
+    }
+}
+
+
+// Medienkatalog laden
+async function loadCatalog(view) {
+    const state = catalogState[view];
+    if (state.loading) return;
+
+    state.loading = true;
+
+    const results = document.getElementById(
+        view === "movies" ? "movieResults" : "seriesResults"
+    );
+
+    const count = document.getElementById(
+        view === "movies" ? "movieCount" : "seriesCount"
+    );
+
+    results.innerHTML = '<div class="empty">Katalog wird geladen ...</div>';
+
+    try {
+        const params = new URLSearchParams({
+            type: state.type,
+            page: String(state.page),
+            limit: String(PAGE_SIZE)
+        });
+
+        if (state.query.trim()) params.set("q", state.query.trim());
+        if (state.category) params.set("category_id", state.category);
+
+        const data = await api(`/api/catalog?${params.toString()}`);
+        const items = data.items || [];
+
+        state.totalPages = Math.max(1, Number(data.totalPages || 1));
+        state.loaded = true;
+
+        count.textContent =
+            `${Number(data.total || 0).toLocaleString("de-DE")} Einträge`;
+
+        renderMedia(items, view);
+        updatePagination(view);
+
+    } catch (error) {
+        results.innerHTML = "";
+        const errorBox = document.createElement("div");
+        errorBox.className = "error";
+        errorBox.textContent = `Katalog konnte nicht geladen werden: ${error.message}`;
+        results.appendChild(errorBox);
+
+        count.textContent = "Fehler beim Laden";
+
+    } finally {
+        state.loading = false;
+    }
+}
+
+
+// Medienkarten darstellen
+function renderMedia(items, view) {
+    const results = document.getElementById(
+        view === "movies" ? "movieResults" : "seriesResults"
+    );
+
+    results.innerHTML = "";
+
+    if (!items.length) {
+        results.innerHTML = '<div class="empty">Keine Einträge gefunden.</div>';
+        return;
+    }
+
+    items.forEach(item => {
+        const title = item.Name || item.name || "Unbekannter Titel";
+        const year = item.Year || item.year || "";
+
+        const image = view === "movies"
+            ? (item.StreamIcon || item.stream_icon || "")
+            : (item.CoverURL || item.cover_url || "");
+
+        const id = view === "movies"
+            ? (item.StreamID ?? item.stream_id)
+            : (item.SeriesID ?? item.series_id);
+
+        const card = document.createElement("div");
+        card.className = "media-card";
+        card.tabIndex = 0;
+        card.setAttribute("role", "button");
+        card.setAttribute("aria-label", `${title} – Details öffnen`);
+
+        const poster = document.createElement("div");
+        poster.className = "poster";
+
+        if (image) {
+            const img = document.createElement("img");
+            img.src = image;
+            img.alt = title;
+            img.loading = "lazy";
+
+            img.onerror = () => {
+                poster.innerHTML = '<div class="poster-placeholder">🎬</div>';
+            };
+
+            poster.appendChild(img);
+        } else {
+            poster.innerHTML = '<div class="poster-placeholder">🎬</div>';
+        }
+
+        const name = document.createElement("div");
+        name.className = "media-title";
+        name.textContent = title;
+
+        const meta = document.createElement("div");
+        meta.className = "media-meta";
+        meta.textContent = year || (view === "movies" ? "Film" : "Serie");
+
+        card.appendChild(poster);
+        card.appendChild(name);
+        card.appendChild(meta);
+
+        card.addEventListener("click", () => {
+            if (id == null) {
+                console.error("Medien-ID fehlt:", item);
+                return;
+            }
+
+            if (view === "movies") {
+                openMovieDetails(id);
+            } else {
+                openSeriesDetails(id);
+            }
+        });
+
+        card.addEventListener("keydown", event => {
+            if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                card.click();
+            }
+        });
+
+        results.appendChild(card);
+    });
+}
+
+
+// Film-Detailansicht
+async function openMovieDetails(movieID) {
+    const requestID = openDetailOverlay();
+
+    try {
+        const data = await api(`/api/movie?id=${encodeURIComponent(movieID)}`);
+
+        if (requestID !== currentDetailRequest) return;
+
+        const movie = data.movie;
+
+        if (!movie) throw new Error("Keine Filmdaten erhalten.");
+
+        renderMovieDetails(movie);
+
+    } catch (error) {
+        if (requestID !== currentDetailRequest) return;
+        showDetailError(error);
+    }
+}
+
+
+function renderMovieDetails(movie) {
+    const title = movie.Name || "Unbekannter Titel";
+    const image = movie.StreamIcon || "";
+    const year = movie.Year || "";
+    const plot = movie.Plot || "Für diesen Film ist keine Beschreibung hinterlegt.";
+
+    const content = document.getElementById("detailContent");
+    content.innerHTML = "";
+
+    const hero = document.createElement("div");
+    hero.className = "detail-hero";
+
+    const poster = createDetailPoster(image, title);
+
+    const info = document.createElement("div");
+    info.className = "detail-heading";
+
+    const heading = document.createElement("h2");
+    heading.textContent = title;
+
+    const meta = document.createElement("div");
+    meta.className = "detail-meta";
+    meta.textContent = year ? `Film · ${year}` : "Film";
+
+    const description = document.createElement("div");
+    description.className = "detail-description";
+    description.textContent = plot;
+
+    info.append(heading, meta, description);
+    hero.append(poster, info);
+    content.appendChild(hero);
+
+    const section = document.createElement("div");
+    section.className = "detail-section";
+
+    const sectionHeading = document.createElement("h3");
+    sectionHeading.textContent = "Technische Informationen";
+
+    const facts = document.createElement("div");
+    facts.className = "detail-facts";
+
+    addFact(facts, "Stream-ID", movie.StreamID);
+    addFact(facts, "Dateiformat", movie.ContainerExt);
+    addFact(facts, "Kategorie-ID", movie.CategoryID);
+    if (movie.Rating) addFact(facts, "Bewertung", movie.Rating);
+
+        section.append(sectionHeading, facts);
+    content.appendChild(section);
+
+        // Download-Warteschlange
+    const queueSection = document.createElement("div");
+    queueSection.className = "queue-section";
+
+    const queueHeading = document.createElement("h3");
+    queueHeading.textContent = "Download";
+
+    const queueDescription = document.createElement("p");
+    queueDescription.className = "muted";
+    queueDescription.textContent =
+        "Verwalte den Download dieses Films.";
+
+    const queueButton = document.createElement("button");
+    queueButton.className = "queue-button";
+    queueButton.textContent = "Warteschlangenstatus wird geprüft ...";
+    queueButton.disabled = true;
+    queueButton.dataset.queued = "false";
+
+    const queueMessage = document.createElement("div");
+    queueMessage.className = "queue-message";
+    queueMessage.setAttribute("aria-live", "polite");
+
+    const movieID = movie.StreamID ?? movie.stream_id;
+
+    queueButton.addEventListener("click", () => {
+        if (queueButton.textContent === "Warteschlangenstatus erneut prüfen") {
+            refreshMovieQueueState(movieID, queueButton, queueMessage);
+            return;
+        }
+
+        toggleMovieQueue(movieID, queueButton, queueMessage);
+    });
+
+    queueSection.append(
+        queueHeading,
+        queueDescription,
+        queueButton,
+        queueMessage
+    );
+
+    content.appendChild(queueSection);
+
+    // Status beim Öffnen der Film-Detailansicht laden.
+    refreshMovieQueueState(movieID, queueButton, queueMessage);
+    content.appendChild(queueSection);
+}
+
+
+// Serien-Detailansicht
+async function openSeriesDetails(seriesID) {
+    const requestID = openDetailOverlay();
+
+    try {
+        const data = await api(`/api/series?id=${encodeURIComponent(seriesID)}`);
+
+        if (requestID !== currentDetailRequest) return;
+
+        const series = data.series;
+        const seasons = Array.isArray(data.seasons) ? data.seasons : [];
+
+        if (!series) throw new Error("Keine Seriendaten erhalten.");
+
+        renderSeriesDetails(series, seasons);
+
+    } catch (error) {
+        if (requestID !== currentDetailRequest) return;
+        showDetailError(error);
+    }
+}
+
+
+function renderSeriesDetails(series, seasons) {
+    const title = series.Name || "Unbekannte Serie";
+    const image = series.CoverURL || "";
+    const year = series.Year || "";
+    const plot = series.Plot || "Für diese Serie ist keine Beschreibung hinterlegt.";
+
+    const content = document.getElementById("detailContent");
+    content.innerHTML = "";
+
+    const hero = document.createElement("div");
+    hero.className = "detail-hero";
+
+    const poster = createDetailPoster(image, title);
+
+    const info = document.createElement("div");
+    info.className = "detail-heading";
+
+    const heading = document.createElement("h2");
+    heading.textContent = title;
+
+    const meta = document.createElement("div");
+    meta.className = "detail-meta";
+    meta.textContent = year ? `Serie · ${year}` : "Serie";
+
+    const description = document.createElement("div");
+    description.className = "detail-description";
+    description.textContent = plot;
+
+    info.append(heading, meta, description);
+    hero.append(poster, info);
+    content.appendChild(hero);
+
+    const factsSection = document.createElement("div");
+    factsSection.className = "detail-section";
+
+    const factsHeading = document.createElement("h3");
+    factsHeading.textContent = "Informationen";
+
+    const facts = document.createElement("div");
+    facts.className = "detail-facts";
+
+    addFact(facts, "Serien-ID", series.SeriesID);
+    addFact(facts, "Kategorie-ID", series.CategoryID);
+    addFact(facts, "Staffeln", seasons.length || "Noch nicht geladen");
+
+    factsSection.append(factsHeading, facts);
+    content.appendChild(factsSection);
+
+    const seasonSection = document.createElement("div");
+    seasonSection.className = "detail-section";
+
+    const seasonHeading = document.createElement("h3");
+    seasonHeading.textContent = "Staffeln und Episoden";
+    seasonSection.appendChild(seasonHeading);
+
+    if (!seasons.length) {
+        const message = document.createElement("div");
+        message.className = "empty";
+        message.textContent =
+            "Für diese Serie sind aktuell noch keine Staffel- und Episodendaten im lokalen Katalog gespeichert.";
+        seasonSection.appendChild(message);
+        content.appendChild(seasonSection);
+        return;
+    }
+
+    const toolbar = document.createElement("div");
+    toolbar.className = "season-toolbar";
+
+    const label = document.createElement("label");
+    label.textContent = "Staffel auswählen:";
+
+    const select = document.createElement("select");
+    select.className = "detail-select";
+
+    const episodeContainer = document.createElement("div");
+    episodeContainer.className = "episode-list";
+
+    seasons.forEach(season => {
+        const seasonNumber = season.SeasonNumber ?? season.season_number;
+        const seasonName = season.Name || season.name ||
+            `Staffel ${seasonNumber}`;
+
+        const option = document.createElement("option");
+        option.value = seasonNumber;
+        option.textContent = seasonName;
+        select.appendChild(option);
+    });
+
+    toolbar.append(label, select);
+    seasonSection.append(toolbar, episodeContainer);
+    content.appendChild(seasonSection);
+
+    const loadSelectedSeason = () => {
+        loadEpisodes(
+            series.SeriesID,
+            select.value,
+            episodeContainer
+        );
+    };
+
+    select.addEventListener("change", loadSelectedSeason);
+    loadSelectedSeason();
+}
+
+
+// Episoden einer Staffel laden
+async function loadEpisodes(seriesID, seasonNumber, container) {
+    container.innerHTML = '<div class="detail-loading">Episoden werden geladen ...</div>';
+
+    try {
+        const params = new URLSearchParams({
+            series_id: String(seriesID),
+            season: String(seasonNumber)
+        });
+
+        const data = await api(`/api/episodes?${params.toString()}`);
+        const episodes = Array.isArray(data.episodes) ? data.episodes : [];
+
+        container.innerHTML = "";
+
+        if (!episodes.length) {
+            const empty = document.createElement("div");
+            empty.className = "empty";
+            empty.textContent = "Für diese Staffel wurden keine Episoden gefunden.";
+            container.appendChild(empty);
+            return;
+        }
+
+        episodes.forEach(episode => {
+            const item = document.createElement("div");
+            item.className = "episode-item";
+
+            const episodeNumber = episode.EpisodeNum ?? "";
+            const title = episode.Title || "Unbekannte Episode";
+
+            const heading = document.createElement("div");
+            heading.className = "episode-title";
+            heading.textContent = episodeNumber
+                ? `${episodeNumber}. ${title}`
+                : title;
+
+            const description = document.createElement("div");
+            description.className = "episode-description";
+            description.textContent =
+                episode.Plot || "Keine Episodenbeschreibung vorhanden.";
+
+            item.append(heading, description);
+
+            const details = [];
+            if (episode.DurationSecs) {
+                details.push(formatDuration(episode.DurationSecs));
+            }
+            if (episode.ContainerExt) {
+                details.push(episode.ContainerExt.toUpperCase());
+            }
+
+            if (details.length) {
+                const meta = document.createElement("div");
+                meta.className = "media-meta";
+                meta.textContent = details.join(" · ");
+                item.appendChild(meta);
+            }
+
+            container.appendChild(item);
+        });
+
+    } catch (error) {
+        container.innerHTML = "";
+
+        const errorBox = document.createElement("div");
+        errorBox.className = "error";
+        errorBox.textContent = `Episoden konnten nicht geladen werden: ${error.message}`;
+        container.appendChild(errorBox);
+    }
+}
+
+
+// Detailansicht öffnen und schließen
+function openDetailOverlay() {
+    currentDetailRequest++;
+
+    const overlay = document.getElementById("detailOverlay");
+    const content = document.getElementById("detailContent");
+
+    content.innerHTML = '<div class="detail-loading">Details werden geladen ...</div>';
+    overlay.classList.add("open");
+    overlay.setAttribute("aria-hidden", "false");
+    document.body.style.overflow = "hidden";
+
+    return currentDetailRequest;
+}
+
+
+function closeDetailOverlay() {
+    currentDetailRequest++;
+
+    const overlay = document.getElementById("detailOverlay");
+    overlay.classList.remove("open");
+    overlay.setAttribute("aria-hidden", "true");
+    document.body.style.overflow = "";
+}
+
+
+document.getElementById("detailClose").addEventListener("click", closeDetailOverlay);
+
+document.getElementById("detailOverlay").addEventListener("click", event => {
+    if (event.target.id === "detailOverlay") {
+        closeDetailOverlay();
+    }
+});
+
+document.addEventListener("keydown", event => {
+    if (event.key === "Escape") {
+        closeDetailOverlay();
+    }
+});
+
+
+// Hilfsfunktionen für Details
+function createDetailPoster(image, title) {
+    const poster = document.createElement("img");
+    poster.className = "detail-poster";
+    poster.alt = title;
+
+    if (image) {
+        poster.src = image;
+        poster.onerror = () => {
+            poster.removeAttribute("src");
+            poster.alt = "Kein Poster verfügbar";
+        };
+    }
+
+    return poster;
+}
+
+
+function addFact(container, label, value) {
+    if (value === undefined || value === null || value === "") return;
+
+    const fact = document.createElement("div");
+    fact.className = "detail-fact";
+
+    const caption = document.createElement("span");
+    caption.textContent = label;
+
+    const content = document.createElement("strong");
+    content.textContent = String(value);
+
+    fact.append(caption, content);
+    container.appendChild(fact);
+}
+
+
+function showDetailError(error) {
+    const content = document.getElementById("detailContent");
+    content.innerHTML = "";
+
+    const errorBox = document.createElement("div");
+    errorBox.className = "error";
+    errorBox.textContent = `Details konnten nicht geladen werden: ${error.message}`;
+
+    content.appendChild(errorBox);
+}
+
+
+function formatDuration(seconds) {
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+
+    if (hours > 0) return `${hours} Std. ${remainingMinutes} Min.`;
+    return `${minutes} Min.`;
+}
+
+
+// Seitennavigation
+function updatePagination(view) {
+    const state = catalogState[view];
+    const prefix = view === "movies" ? "movie" : "series";
+
+    document.getElementById(`${prefix}Page`).textContent =
+        `Seite ${state.page} von ${state.totalPages}`;
+
+    document.getElementById(`${prefix}Prev`).disabled = state.page <= 1;
+    document.getElementById(`${prefix}Next`).disabled =
+        state.page >= state.totalPages;
+}
+
+
+// Suche mit kurzer Verzögerung
+function setupSearch(view) {
+    const prefix = view === "movies" ? "movie" : "series";
+
+    const search = document.getElementById(`${prefix}Search`);
+    const category = document.getElementById(`${prefix}Category`);
+
+    search.addEventListener("input", () => {
+        clearTimeout(searchTimers[view]);
+
+        searchTimers[view] = setTimeout(() => {
+            catalogState[view].query = search.value;
+            catalogState[view].page = 1;
+            loadCatalog(view);
+        }, 350);
+    });
+
+    category.addEventListener("change", () => {
+        catalogState[view].category = category.value;
+        catalogState[view].page = 1;
+        loadCatalog(view);
+    });
+
+    document.getElementById(`${prefix}Prev`).addEventListener("click", () => {
+        if (catalogState[view].page > 1) {
+            catalogState[view].page--;
+            loadCatalog(view);
+        }
+    });
+
+    document.getElementById(`${prefix}Next`).addEventListener("click", () => {
+        if (catalogState[view].page < catalogState[view].totalPages) {
+            catalogState[view].page++;
+            loadCatalog(view);
+        }
+    });
+}
+
+
+// Initialisierung
+setupSearch("movies");
+setupSearch("series");
+
+loadCategories("movies");
+loadCategories("series");
+
+loadDashboard();
+setInterval(loadDashboard, 10000);
+</script>
+
+</body>
+</html>

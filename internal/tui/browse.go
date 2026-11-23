@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -206,10 +207,11 @@ func loadItemsCmd(st *store.Store, xc *xtream.Client, cat store.CategoryRow) tea
 				for _, v := range api {
 					y := 0
 					fmt.Sscanf(v.Year, "%d", &y)
+					rating, _ := strconv.ParseFloat(strings.TrimSpace(string(v.Rating)), 64)
 					rows = append(rows, store.VODRow{
 						StreamID: v.StreamID, CategoryID: cat.ID, Name: v.Name,
 						Year: y, Plot: v.Plot, StreamIcon: v.StreamIcon,
-						ContainerExt: v.ContainerExtension,
+						ContainerExt: v.ContainerExtension, Rating: rating,
 					})
 				}
 				_ = st.UpsertVODs(ctx, rows)

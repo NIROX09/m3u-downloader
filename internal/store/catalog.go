@@ -22,7 +22,9 @@ func (s *Store) ListAllVODs(ctx context.Context) ([]VODRow, error) {
 		        COALESCE(stream_icon_url,''),COALESCE(container_extension,''),
 		        COALESCE(added,0),COALESCE(rating,0)
 		 FROM vods ORDER BY name`)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	var out []VODRow
 	for rows.Next() {
@@ -34,6 +36,39 @@ func (s *Store) ListAllVODs(ctx context.Context) ([]VODRow, error) {
 		out = append(out, v)
 	}
 	return out, rows.Err()
+}
+
+// GetVOD returns a single cached VOD by streamID,
+// or (nil, nil) if it does not exist.
+func (s *Store) GetVOD(ctx context.Context, streamID int) (*VODRow, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT stream_id, category_id, name,
+		       COALESCE(year,0), COALESCE(plot,''),
+		       COALESCE(stream_icon_url,''),
+		       COALESCE(container_extension,''),
+		       COALESCE(added,0), COALESCE(rating,0)
+		FROM vods
+		WHERE stream_id=?`, streamID)
+
+	var v VODRow
+	if err := row.Scan(
+		&v.StreamID,
+		&v.CategoryID,
+		&v.Name,
+		&v.Year,
+		&v.Plot,
+		&v.StreamIcon,
+		&v.ContainerExt,
+		&v.Added,
+		&v.Rating,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return &v, nil
 }
 
 // ListAllSeries returns every cached series (used by global search).
@@ -59,7 +94,9 @@ func (s *Store) ListAllSeries(ctx context.Context) ([]SeriesRow, error) {
 		`SELECT series_id,category_id,name,COALESCE(year,0),COALESCE(plot,''),
 		        COALESCE(cover_url,''),COALESCE(backdrop_url,'')
 		 FROM series ORDER BY name`)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	var out []SeriesRow
 	for rows.Next() {
@@ -124,12 +161,16 @@ type EpisodeRow struct {
 
 func (s *Store) UpsertCategories(ctx context.Context, rows []CategoryRow) error {
 	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer tx.Rollback()
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO categories(id,type,name,parent_id) VALUES(?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET name=excluded.name, parent_id=excluded.parent_id, type=excluded.type`)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer stmt.Close()
 	for _, r := range rows {
 		if _, err := stmt.ExecContext(ctx, r.ID, r.Type, r.Name, r.ParentID); err != nil {
@@ -143,7 +184,9 @@ func (s *Store) ListCategories(ctx context.Context, kind string) ([]CategoryRow,
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, type, name, COALESCE(parent_id,0), COALESCE(fetched_at,0)
 		 FROM categories WHERE type=? ORDER BY name`, kind)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	var out []CategoryRow
 	for rows.Next() {
@@ -164,7 +207,9 @@ func (s *Store) MarkCategoryFetched(ctx context.Context, id int) error {
 
 func (s *Store) UpsertVODs(ctx context.Context, rows []VODRow) error {
 	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer tx.Rollback()
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO vods(stream_id,category_id,name,year,plot,stream_icon_url,container_extension,added,rating,fetched_at)
@@ -173,7 +218,9 @@ func (s *Store) UpsertVODs(ctx context.Context, rows []VODRow) error {
 		  category_id=excluded.category_id, name=excluded.name, year=excluded.year, plot=excluded.plot,
 		  stream_icon_url=excluded.stream_icon_url, container_extension=excluded.container_extension,
 		  added=excluded.added, rating=excluded.rating, fetched_at=excluded.fetched_at`)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer stmt.Close()
 	now := time.Now().Unix()
 	for _, r := range rows {
@@ -191,7 +238,9 @@ func (s *Store) ListVODs(ctx context.Context, categoryID int) ([]VODRow, error) 
 		        COALESCE(stream_icon_url,''),COALESCE(container_extension,''),
 		        COALESCE(added,0),COALESCE(rating,0)
 		 FROM vods WHERE category_id=? ORDER BY name`, categoryID)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	var out []VODRow
 	for rows.Next() {
@@ -207,7 +256,9 @@ func (s *Store) ListVODs(ctx context.Context, categoryID int) ([]VODRow, error) 
 
 func (s *Store) UpsertSeries(ctx context.Context, rows []SeriesRow) error {
 	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer tx.Rollback()
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO series(series_id,category_id,name,year,plot,cover_url,backdrop_url,fetched_at)
@@ -215,7 +266,9 @@ func (s *Store) UpsertSeries(ctx context.Context, rows []SeriesRow) error {
 		ON CONFLICT(series_id) DO UPDATE SET
 		  category_id=excluded.category_id, name=excluded.name, year=excluded.year, plot=excluded.plot,
 		  cover_url=excluded.cover_url, backdrop_url=excluded.backdrop_url, fetched_at=excluded.fetched_at`)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer stmt.Close()
 	now := time.Now().Unix()
 	for _, r := range rows {
@@ -232,7 +285,9 @@ func (s *Store) ListSeries(ctx context.Context, categoryID int) ([]SeriesRow, er
 		`SELECT series_id,category_id,name,COALESCE(year,0),COALESCE(plot,''),
 		        COALESCE(cover_url,''),COALESCE(backdrop_url,'')
 		 FROM series WHERE category_id=? ORDER BY name`, categoryID)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	var out []SeriesRow
 	for rows.Next() {
@@ -248,10 +303,16 @@ func (s *Store) ListSeries(ctx context.Context, categoryID int) ([]SeriesRow, er
 
 func (s *Store) ReplaceSeasonsAndEpisodes(ctx context.Context, seriesID int, seasons []SeasonRow, episodes []EpisodeRow) error {
 	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM seasons WHERE series_id=?`, seriesID); err != nil { return err }
-	if _, err := tx.ExecContext(ctx, `DELETE FROM episodes WHERE series_id=?`, seriesID); err != nil { return err }
+	if _, err := tx.ExecContext(ctx, `DELETE FROM seasons WHERE series_id=?`, seriesID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM episodes WHERE series_id=?`, seriesID); err != nil {
+		return err
+	}
 	for _, s := range seasons {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO seasons(series_id,season_number,name,overview,cover_url) VALUES(?,?,?,?,?)`,
@@ -274,7 +335,9 @@ func (s *Store) ListSeasons(ctx context.Context, seriesID int) ([]SeasonRow, err
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT series_id,season_number,COALESCE(name,''),COALESCE(overview,''),COALESCE(cover_url,'')
 		 FROM seasons WHERE series_id=? ORDER BY season_number`, seriesID)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	var out []SeasonRow
 	for rows.Next() {
@@ -292,7 +355,9 @@ func (s *Store) ListEpisodes(ctx context.Context, seriesID, season int) ([]Episo
 		`SELECT episode_id,series_id,season_number,episode_num,COALESCE(title,''),COALESCE(plot,''),
 		        COALESCE(container_extension,''),COALESCE(duration_secs,0)
 		 FROM episodes WHERE series_id=? AND season_number=? ORDER BY episode_num`, seriesID, season)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	var out []EpisodeRow
 	for rows.Next() {
@@ -304,4 +369,146 @@ func (s *Store) ListEpisodes(ctx context.Context, seriesID, season int) ([]Episo
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// ListVODPage returns a filtered page of movies and the total match count.
+func (s *Store) ListVODPage(ctx context.Context, categoryID int, search string, limit, offset int) ([]VODRow, int, error) {
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	search = "%" + search + "%"
+
+	var total int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM vods
+		WHERE (? = 0 OR category_id = ?)
+		  AND name LIKE ? COLLATE NOCASE`,
+		categoryID, categoryID, search).Scan(&total)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT stream_id, category_id, name,
+		       COALESCE(year,0), COALESCE(plot,''),
+		       COALESCE(stream_icon_url,''),
+		       COALESCE(container_extension,''),
+		       COALESCE(added,0), COALESCE(rating,0)
+		FROM vods
+		WHERE (? = 0 OR category_id = ?)
+		  AND name LIKE ? COLLATE NOCASE
+		ORDER BY name
+		LIMIT ? OFFSET ?`,
+		categoryID, categoryID, search, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var result []VODRow
+	for rows.Next() {
+		var v VODRow
+		if err := rows.Scan(
+			&v.StreamID, &v.CategoryID, &v.Name,
+			&v.Year, &v.Plot, &v.StreamIcon,
+			&v.ContainerExt, &v.Added, &v.Rating,
+		); err != nil {
+			return nil, 0, err
+		}
+		result = append(result, v)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	return result, total, nil
+}
+
+// ListSeriesPage returns a filtered page of series and the total match count.
+func (s *Store) ListSeriesPage(ctx context.Context, categoryID int, search string, limit, offset int) ([]SeriesRow, int, error) {
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	search = "%" + search + "%"
+
+	var total int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM series
+		WHERE (? = 0 OR category_id = ?)
+		  AND name LIKE ? COLLATE NOCASE`,
+		categoryID, categoryID, search).Scan(&total)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT series_id, category_id, name,
+		       COALESCE(year,0), COALESCE(plot,''),
+		       COALESCE(cover_url,''), COALESCE(backdrop_url,'')
+		FROM series
+		WHERE (? = 0 OR category_id = ?)
+		  AND name LIKE ? COLLATE NOCASE
+		ORDER BY name
+		LIMIT ? OFFSET ?`,
+		categoryID, categoryID, search, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var result []SeriesRow
+	for rows.Next() {
+		var r SeriesRow
+		if err := rows.Scan(
+			&r.SeriesID, &r.CategoryID, &r.Name,
+			&r.Year, &r.Plot, &r.CoverURL, &r.BackdropURL,
+		); err != nil {
+			return nil, 0, err
+		}
+		result = append(result, r)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	return result, total, nil
+}
+
+// SeriesDetailsFetched reports whether get_series_info was successfully
+// fetched and cached for the given series.
+func (s *Store) SeriesDetailsFetched(ctx context.Context, seriesID int) (bool, error) {
+	var fetched bool
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT details_fetched_at IS NOT NULL
+		FROM series
+		WHERE series_id = ?`, seriesID).Scan(&fetched)
+
+	if err != nil {
+		return false, err
+	}
+
+	return fetched, nil
+}
+
+// MarkSeriesDetailsFetched marks the series details as successfully cached.
+func (s *Store) MarkSeriesDetailsFetched(ctx context.Context, seriesID int) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE series
+		SET details_fetched_at = unixepoch()
+		WHERE series_id = ?`, seriesID)
+
+	return err
 }

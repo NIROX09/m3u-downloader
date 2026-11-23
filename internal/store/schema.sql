@@ -20,14 +20,15 @@ CREATE TABLE IF NOT EXISTS vods (
 );
 
 CREATE TABLE IF NOT EXISTS series (
-  series_id    INTEGER PRIMARY KEY,
-  category_id  INTEGER NOT NULL,
-  name         TEXT NOT NULL,
-  year         INTEGER,
-  plot         TEXT,
-  cover_url    TEXT,
-  backdrop_url TEXT,
-  fetched_at   INTEGER NOT NULL
+  series_id           INTEGER PRIMARY KEY,
+  category_id         INTEGER NOT NULL,
+  name                TEXT NOT NULL,
+  year                INTEGER,
+  plot                 TEXT,
+  cover_url            TEXT,
+  backdrop_url         TEXT,
+  fetched_at           INTEGER NOT NULL,
+  details_fetched_at   INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS seasons (
