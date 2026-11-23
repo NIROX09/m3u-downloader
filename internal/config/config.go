@@ -17,6 +17,9 @@ type Config struct {
 		Password  string `toml:"password"`
 		UserAgent string `toml:"user_agent"`
 	} `toml:"provider"`
+	Web struct {
+		ListenAddr string `toml:"listen_addr"`
+	} `toml:"web"`
 	Output struct {
 		MoviesDir string `toml:"movies_dir"`
 		SeriesDir string `toml:"series_dir"`
@@ -64,6 +67,9 @@ func Load(path string) (*Config, error) {
 
 // Validate fills defaults and returns an error if required fields are missing.
 func (c *Config) Validate() error {
+	if c.Web.ListenAddr == "" {
+		c.Web.ListenAddr = "0.0.0.0:8765"
+	}
 	if c.Provider.BaseURL == "" {
 		return fmt.Errorf("provider.base_url is required")
 	}

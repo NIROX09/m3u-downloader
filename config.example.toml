@@ -13,6 +13,10 @@ password   = "YOUR_PASSWORD"
 # something specific.
 user_agent = "LimePlayer"
 
+[web]
+# Bind to all network interfaces for LAN access.
+listen_addr = "0.0.0.0:8765"
+
 [output]
 # Both directories MUST exist before the worker starts (an unmounted-volume
 # safety check). Point them at your two Plex libraries (movies and TV).

@@ -57,6 +57,21 @@ func TestValidate_MissingBaseURL(t *testing.T) {
 	}
 }
 
+func TestValidate_WebListenDefault(t *testing.T) {
+	c := &Config{}
+	c.Provider.BaseURL = "http://x"
+	c.Provider.Username = "u"
+	c.Provider.Password = "p"
+	c.Output.MoviesDir = "/m"
+	c.Output.SeriesDir = "/s"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if c.Web.ListenAddr != "0.0.0.0:8765" {
+		t.Errorf("Web.ListenAddr = %q", c.Web.ListenAddr)
+	}
+}
+
 func TestValidate_DefaultsApplied(t *testing.T) {
 	c := &Config{}
 	c.Provider.BaseURL = "http://x"

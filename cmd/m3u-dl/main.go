@@ -30,8 +30,8 @@ Subcommands:
   worker               Long-running download worker (launchd target)
   sync                 Force a full catalog refresh
   config               Print active config (with secrets redacted)
-  install-service      Install launchd agent
-  uninstall-service    Remove launchd agent
+  install-service      Install persistent worker and web services
+  uninstall-service    Remove persistent worker and web services
     web                Start the browser-based media manager
 `
 
@@ -132,7 +132,7 @@ func runWeb(_ []string) error {
 		SeriesDir: cfg.Output.SeriesDir,
 	}
 
-	return web.New(st, xc, enqueueCfg).ListenAndServe("127.0.0.1:8765")
+	return web.New(st, xc, enqueueCfg).ListenAndServe(cfg.Web.ListenAddr)
 }
 
 func runWorker(_ []string) error {
