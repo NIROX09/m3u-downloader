@@ -160,6 +160,34 @@ func TestRequeueClearsStartedAt(t *testing.T) {
 	}
 }
 
+func TestReorderPendingJobsAndSetPhase(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	first, _ := s.EnqueueJob(ctx, "vod", 100, "/first")
+	second, _ := s.EnqueueJob(ctx, "vod", 101, "/second")
+
+	if err := s.ReorderPendingJobs(ctx, []int64{second, first}); err != nil {
+		t.Fatal(err)
+	}
+	job, err := s.ClaimNext(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job == nil || job.ID != second {
+		t.Fatalf("ClaimNext ID = %v, want %d", job, second)
+	}
+	if err := s.SetJobPhase(ctx, second, "remux"); err != nil {
+		t.Fatal(err)
+	}
+	var phase string
+	if err := s.DB().QueryRow(`SELECT phase FROM jobs WHERE id=?`, second).Scan(&phase); err != nil {
+		t.Fatal(err)
+	}
+	if phase != "remux" {
+		t.Fatalf("phase = %q, want remux", phase)
+	}
+}
+
 func TestRemoveQueuedEpisodeJobsForSeriesAndSeason(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

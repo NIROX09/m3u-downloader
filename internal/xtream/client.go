@@ -11,11 +11,12 @@ import (
 
 // Client is an Xtream Codes player_api.php client.
 type Client struct {
-	baseURL   string
-	username  string
-	password  string
-	userAgent string
-	http      *http.Client
+	baseURL    string
+	username   string
+	password   string
+	userAgent  string
+	http       *http.Client
+	accessGate func(context.Context) error
 }
 
 func NewClient(baseURL, username, password, userAgent string) *Client {
@@ -28,7 +29,16 @@ func NewClient(baseURL, username, password, userAgent string) *Client {
 	}
 }
 
+func (c *Client) SetAccessGate(gate func(context.Context) error) {
+	c.accessGate = gate
+}
+
 func (c *Client) doJSON(ctx context.Context, action string, extras map[string]string, dst any) error {
+	if c.accessGate != nil {
+		if err := c.accessGate(ctx); err != nil {
+			return fmt.Errorf("xtream access paused: %w", err)
+		}
+	}
 	u := PlayerAPIURL(c.baseURL, c.username, c.password, action, extras)
 	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {

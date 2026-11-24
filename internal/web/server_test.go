@@ -2,8 +2,11 @@ package web
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -98,6 +101,85 @@ func TestJobHTTPActions(t *testing.T) {
 		t.Fatalf("cancelled retry status = %d: %s",
 			cancelledRetryResponse.Code,
 			cancelledRetryResponse.Body.String())
+	}
+}
+
+func TestReorderQueueHTTP(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	first, _ := st.EnqueueJob(ctx, "vod", 1, "/first")
+	second, _ := st.EnqueueJob(ctx, "vod", 2, "/second")
+	handler := New(st, nil, catalog.EnqueueConfig{})
+	server, err := handler.Handler(fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte("ok")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf(`{"job_ids":[%d,%d]}`, second, first)
+	request := httptest.NewRequest(http.MethodPost, "/api/queue/reorder", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("reorder status = %d: %s", response.Code, response.Body.String())
+	}
+	job, err := st.ClaimNext(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job == nil || job.ID != second {
+		t.Fatalf("claimed job = %+v, want ID %d", job, second)
+	}
+}
+
+func TestPauseRuleHTTP(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	handler, err := New(st, nil, catalog.EnqueueConfig{}).Handler(fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte("test")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	create := httptest.NewRequest(http.MethodPost, "/api/pauses",
+		strings.NewReader(`{"scope":"downloads","mode":"duration","duration_minutes":15}`))
+	create.Header.Set("Content-Type", "application/json")
+	created := httptest.NewRecorder()
+	handler.ServeHTTP(created, create)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status = %d: %s", created.Code, created.Body.String())
+	}
+	if !strings.Contains(created.Body.String(), `"mode":"duration"`) {
+		t.Fatalf("create response missing rule: %s", created.Body.String())
+	}
+	list := httptest.NewRecorder()
+	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/pauses", nil))
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"paused_downloads":true`) {
+		t.Fatalf("GET /api/pauses = %d: %s", list.Code, list.Body.String())
+	}
+	var response struct {
+		Rule struct {
+			ID int64 `json:"id"`
+		} `json:"rule"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	deleteRequest := httptest.NewRequest(http.MethodDelete,
+		"/api/pauses/"+strconv.FormatInt(response.Rule.ID, 10), nil)
+	deleteRequest.SetPathValue("id", strconv.FormatInt(response.Rule.ID, 10))
+	deleted := httptest.NewRecorder()
+	handler.ServeHTTP(deleted, deleteRequest)
+	if deleted.Code != http.StatusOK {
+		t.Fatalf("delete status = %d: %s", deleted.Code, deleted.Body.String())
 	}
 }
 

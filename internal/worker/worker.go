@@ -10,10 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Thiritin/m3u-downloader/internal/downloader"
 	"github.com/Thiritin/m3u-downloader/internal/nas"
+	"github.com/Thiritin/m3u-downloader/internal/pause"
 	"github.com/Thiritin/m3u-downloader/internal/remux"
 	"github.com/Thiritin/m3u-downloader/internal/store"
 )
@@ -38,7 +40,10 @@ type Worker struct {
 	Remux          bool
 	Logger         *slog.Logger
 	NAS            *nas.Watchdog
+	Pauses         *pause.Controller
 }
+
+var ErrPaused = errors.New("job paused by schedule")
 
 func (w *Worker) log() *slog.Logger {
 	if w.Logger != nil {
@@ -101,6 +106,15 @@ func (w *Worker) Run(ctx context.Context) error {
 }
 
 func (w *Worker) processOne(ctx context.Context) error {
+	if w.Pauses != nil {
+		paused, err := w.Pauses.IsPaused(ctx, "downloads")
+		if err != nil {
+			return fmt.Errorf("check download pause: %w", err)
+		}
+		if paused {
+			return nil
+		}
+	}
 	job, err := w.Store.ClaimNext(ctx)
 	if err != nil {
 		return fmt.Errorf("claim: %w", err)
@@ -122,7 +136,13 @@ func (w *Worker) processOne(ctx context.Context) error {
 		return nil
 	}
 
+	if errors.Is(runErr, ErrPaused) {
+		w.log().Info("download paused by schedule; preserving partial data", "id", job.ID)
+		return w.Store.RequeueJobNoAttempt(ctx, job.ID, "paused by schedule")
+	}
+
 	if runErr == nil {
+		_ = w.Store.SetJobPhase(ctx, job.ID, "completed")
 		return w.Store.CompleteJob(ctx, job.ID)
 	}
 	w.log().Warn("job failed", "id", job.ID, "err", runErr)
@@ -180,6 +200,7 @@ func (w *Worker) runJob(parent context.Context, job store.JobRow) error {
 	// status changes away from 'active' (cancelled or deleted), we cancel.
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
+	var paused atomic.Bool
 	go func() {
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
@@ -188,6 +209,14 @@ func (w *Worker) runJob(parent context.Context, job store.JobRow) error {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				if w.Pauses != nil {
+					isPaused, err := w.Pauses.IsPaused(parent, "downloads")
+					if err != nil || isPaused {
+						paused.Store(true)
+						cancel()
+						return
+					}
+				}
 				status, err := w.Store.GetJobStatus(parent, job.ID)
 				if err == nil && status != "active" {
 					cancel()
@@ -196,6 +225,9 @@ func (w *Worker) runJob(parent context.Context, job store.JobRow) error {
 			}
 		}
 	}()
+	isPaused := func() bool {
+		return paused.Load()
+	}
 	// Verify the configured library root exists. When a network/external volume
 	// is unmounted, the mount-point dir often remains as an empty placeholder,
 	// so we must check the EXACT configured root, not a parent of dest_path.
@@ -236,13 +268,23 @@ func (w *Worker) runJob(parent context.Context, job store.JobRow) error {
 	// If a previous run completed remux locally but could not reach the NAS,
 	// retain that finished file and only retry its final copy.
 	if fi, err := os.Stat(tempDest); err == nil && fi.Size() > 0 {
+		if w.Pauses != nil {
+			pausedNow, pauseErr := w.Pauses.IsPaused(ctx, "downloads")
+			if pauseErr != nil || pausedNow {
+				return ErrPaused
+			}
+		}
 		if _, err := os.Stat(finalRoot); err != nil {
 			return errDestinationUnavailable{fmt.Errorf("final destination unavailable: %s: %w", finalRoot, err)}
 		}
+		_ = w.Store.SetJobPhase(ctx, job.ID, "transfer")
 		if err := os.MkdirAll(filepath.Dir(job.DestPath), 0o755); err != nil {
 			return errDestinationUnavailable{fmt.Errorf("mkdir final destination: %w", err)}
 		}
-		if err := copyCompletedFile(tempDest, job.DestPath); err != nil {
+		if err := copyCompletedFile(ctx, tempDest, job.DestPath); err != nil {
+			if isPaused() {
+				return ErrPaused
+			}
 			return errDestinationUnavailable{fmt.Errorf("copy completed file to library: %w", err)}
 		}
 		_ = os.Remove(tempDest)
@@ -261,10 +303,14 @@ func (w *Worker) runJob(parent context.Context, job store.JobRow) error {
 
 	tmp := tempDest + ".raw"
 	d := &downloader.Downloader{UserAgent: w.UserAgent}
+	_ = w.Store.SetJobPhase(ctx, job.ID, "download")
 	progress := func(got, total int64) {
 		_ = w.Store.UpdateProgress(ctx, job.ID, got, total)
 	}
 	if err := d.Download(ctx, url, tmp, progress); err != nil {
+		if isPaused() {
+			return ErrPaused
+		}
 		return fmt.Errorf("download: %w", err)
 	}
 	// Some providers list titles they don't actually have and respond
@@ -275,7 +321,12 @@ func (w *Worker) runJob(parent context.Context, job store.JobRow) error {
 	}
 
 	if w.Remux {
+		_ = w.Store.SetJobPhase(ctx, job.ID, "remux")
 		if err := remux.ToMKV(ctx, tmp, tempDest); err != nil {
+			if isPaused() {
+				_ = os.Remove(tempDest)
+				return ErrPaused
+			}
 			return err
 		}
 		_ = os.Remove(tmp)
@@ -287,10 +338,20 @@ func (w *Worker) runJob(parent context.Context, job store.JobRow) error {
 	if _, err := os.Stat(finalRoot); err != nil {
 		return errDestinationUnavailable{fmt.Errorf("final destination unavailable: %s: %w", finalRoot, err)}
 	}
+	if w.Pauses != nil {
+		pausedNow, err := w.Pauses.IsPaused(ctx, "downloads")
+		if err != nil || pausedNow {
+			return ErrPaused
+		}
+	}
+	_ = w.Store.SetJobPhase(ctx, job.ID, "transfer")
 	if err := os.MkdirAll(filepath.Dir(job.DestPath), 0o755); err != nil {
 		return errDestinationUnavailable{fmt.Errorf("mkdir final destination: %w", err)}
 	}
-	if err := copyCompletedFile(tempDest, job.DestPath); err != nil {
+	if err := copyCompletedFile(ctx, tempDest, job.DestPath); err != nil {
+		if isPaused() {
+			return ErrPaused
+		}
 		return errDestinationUnavailable{fmt.Errorf("copy completed file to library: %w", err)}
 	}
 	_ = os.Remove(tempDest)
@@ -328,7 +389,7 @@ func relativeLibraryPath(root, dest string) (string, error) {
 	return filepath.Rel(root, dest)
 }
 
-func copyCompletedFile(src, dst string) error {
+func copyCompletedFile(ctx context.Context, src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -340,11 +401,12 @@ func copyCompletedFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
+	if _, err := io.Copy(out, &contextReader{ctx: ctx, reader: in}); err != nil {
 		out.Close()
 		_ = os.Remove(part)
 		return err
 	}
+
 	if err := out.Sync(); err != nil {
 		out.Close()
 		_ = os.Remove(part)
@@ -359,4 +421,18 @@ func copyCompletedFile(src, dst string) error {
 		return err
 	}
 	return nil
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r *contextReader) Read(buffer []byte) (int, error) {
+	select {
+	case <-r.ctx.Done():
+		return 0, r.ctx.Err()
+	default:
+		return r.reader.Read(buffer)
+	}
 }

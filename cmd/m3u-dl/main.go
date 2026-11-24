@@ -17,6 +17,7 @@ import (
 	"github.com/Thiritin/m3u-downloader/internal/config"
 	"github.com/Thiritin/m3u-downloader/internal/downloader"
 	"github.com/Thiritin/m3u-downloader/internal/nas"
+	"github.com/Thiritin/m3u-downloader/internal/pause"
 	"github.com/Thiritin/m3u-downloader/internal/service"
 	"github.com/Thiritin/m3u-downloader/internal/store"
 	"github.com/Thiritin/m3u-downloader/internal/tui"
@@ -111,6 +112,10 @@ func loadAll() (*config.Config, *store.Store, *xtream.Client, error) {
 		return nil, nil, nil, err
 	}
 	xc := xtream.NewClient(cfg.Provider.BaseURL, cfg.Provider.Username, cfg.Provider.Password, cfg.Provider.UserAgent)
+	pauses := pause.New(st.DB())
+	xc.SetAccessGate(func(ctx context.Context) error {
+		return pauses.Wait(ctx, "iptv")
+	})
 	return cfg, st, xc, nil
 }
 
@@ -152,7 +157,9 @@ func runWeb(_ []string) error {
 		}
 	}
 
-	return web.New(st, xc, enqueueCfg).ListenAndServe(cfg.Web.ListenAddr)
+	server := web.New(st, xc, enqueueCfg)
+	server.SetPauseController(pause.New(st.DB()))
+	return server.ListenAndServe(cfg.Web.ListenAddr)
 }
 
 func runWorker(_ []string) error {
@@ -184,6 +191,7 @@ func runWorker(_ []string) error {
 		MaxRetries:     cfg.Downloader.MaxRetries,
 		BackoffSeconds: cfg.Downloader.BackoffSeconds,
 		Logger:         logger,
+		Pauses:         pause.New(st.DB()),
 		ResolveURL: func(j store.JobRow) (string, error) {
 			ext := lookupExt(st, j)
 			switch j.Kind {

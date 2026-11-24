@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 )
 
 func TestClient_UsesUserAgent(t *testing.T) {
@@ -22,6 +23,46 @@ func TestClient_UsesUserAgent(t *testing.T) {
 	}
 	if gotUA != "LimePlayer" {
 		t.Errorf("UA = %q, want LimePlayer", gotUA)
+	}
+}
+
+func TestClient_WaitsForAccessGate(t *testing.T) {
+	requestReceived := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestReceived <- struct{}{}
+		w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+
+	allow := make(chan struct{})
+	client := NewClient(srv.URL, "u", "p", "LimePlayer")
+	client.SetAccessGate(func(ctx context.Context) error {
+		select {
+		case <-allow:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.GetVODCategories(context.Background())
+		done <- err
+	}()
+
+	select {
+	case <-requestReceived:
+		t.Fatal("provider request passed the closed access gate")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(allow)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("provider request did not continue after gate opened")
 	}
 }
 

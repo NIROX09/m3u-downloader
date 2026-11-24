@@ -15,21 +15,24 @@ import (
 var ErrAlreadyQueued = errors.New("already queued")
 
 type JobRow struct {
-	ID            int64
-	Kind          string
-	SourceID      int
-	SeriesID      int
-	SeasonNumber  int
-	EpisodeNumber int
-	Status        string
-	DestPath      string
-	ProgressBytes int64
-	TotalBytes    int64
-	Attempts      int
-	LastError     string
-	CreatedAt     int64
-	StartedAt     *int64
-	CompletedAt   *int64
+	ID             int64
+	Kind           string
+	SourceID       int
+	SeriesID       int
+	SeasonNumber   int
+	EpisodeNumber  int
+	Status         string
+	DestPath       string
+	ProgressBytes  int64
+	TotalBytes     int64
+	Attempts       int
+	LastError      string
+	CreatedAt      int64
+	StartedAt      *int64
+	CompletedAt    *int64
+	QueuePosition  int
+	Phase          string
+	PhaseStartedAt *int64
 }
 
 func (s *Store) EnqueueJob(ctx context.Context, kind string, sourceID int, destPath string) (int64, error) {
@@ -124,13 +127,16 @@ func (s *Store) ClaimNext(ctx context.Context) (*JobRow, error) {
 	defer tx.Rollback()
 	row := tx.QueryRowContext(ctx, `
 		SELECT id, kind, source_id, COALESCE(dest_path,''), attempts,
-		       COALESCE(series_id,0), COALESCE(season_number,0), COALESCE(episode_number,0)
+		       COALESCE(series_id,0), COALESCE(season_number,0), COALESCE(episode_number,0),
+		       queue_position, COALESCE(phase,'queued'), phase_started_at
 		FROM jobs WHERE status='pending'
-		ORDER BY created_at ASC LIMIT 1`)
+		ORDER BY CASE WHEN queue_position > 0 THEN queue_position ELSE created_at END ASC,
+		         created_at ASC, id ASC LIMIT 1`)
 	var j JobRow
 	if err := row.Scan(
 		&j.ID, &j.Kind, &j.SourceID, &j.DestPath, &j.Attempts,
 		&j.SeriesID, &j.SeasonNumber, &j.EpisodeNumber,
+		&j.QueuePosition, &j.Phase, &j.PhaseStartedAt,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -154,6 +160,29 @@ func (s *Store) UpdateProgress(ctx context.Context, id int64, progress, total in
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE jobs SET progress_bytes=?, total_bytes=? WHERE id=?`, progress, total, id)
 	return err
+}
+
+func (s *Store) SetJobPhase(ctx context.Context, id int64, phase string) error {
+	now := time.Now().Unix()
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE jobs SET phase=?, phase_started_at=? WHERE id=?`, phase, now, id)
+	return err
+}
+
+func (s *Store) ReorderPendingJobs(ctx context.Context, jobIDs []int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for position, id := range jobIDs {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE jobs SET queue_position=? WHERE id=? AND status='pending'`,
+			position+1, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) CompleteJob(ctx context.Context, id int64) error {
@@ -263,7 +292,8 @@ func (s *Store) ListJobs(ctx context.Context, statuses ...string) ([]JobRow, err
 	q := `SELECT id,kind,source_id,status,COALESCE(dest_path,''),
 	             progress_bytes,COALESCE(total_bytes,0),attempts,COALESCE(last_error,''),
 	             created_at,started_at,completed_at,
-	             COALESCE(series_id,0),COALESCE(season_number,0),COALESCE(episode_number,0)
+	             COALESCE(series_id,0),COALESCE(season_number,0),COALESCE(episode_number,0),
+	             queue_position,COALESCE(phase,'queued'),phase_started_at
 	      FROM jobs WHERE status IN (`
 	args := make([]any, 0, len(statuses))
 	for i, s := range statuses {
@@ -276,7 +306,8 @@ func (s *Store) ListJobs(ctx context.Context, statuses ...string) ([]JobRow, err
 	q += `) ORDER BY
 	        CASE status WHEN 'active' THEN 0 WHEN 'pending' THEN 1
 	                    WHEN 'failed' THEN 2 WHEN 'completed' THEN 3 ELSE 4 END,
-	        created_at`
+	        CASE WHEN queue_position > 0 THEN queue_position ELSE created_at END,
+	        created_at, id`
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -288,7 +319,8 @@ func (s *Store) ListJobs(ctx context.Context, statuses ...string) ([]JobRow, err
 		if err := rows.Scan(&j.ID, &j.Kind, &j.SourceID, &j.Status, &j.DestPath,
 			&j.ProgressBytes, &j.TotalBytes, &j.Attempts, &j.LastError,
 			&j.CreatedAt, &j.StartedAt, &j.CompletedAt,
-			&j.SeriesID, &j.SeasonNumber, &j.EpisodeNumber); err != nil {
+			&j.SeriesID, &j.SeasonNumber, &j.EpisodeNumber,
+			&j.QueuePosition, &j.Phase, &j.PhaseStartedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, j)

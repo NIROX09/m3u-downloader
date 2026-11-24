@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"database/sql"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Thiritin/m3u-downloader/internal/catalog"
+	"github.com/Thiritin/m3u-downloader/internal/pause"
 	"github.com/Thiritin/m3u-downloader/internal/store"
 	"github.com/Thiritin/m3u-downloader/internal/xtream"
 )
@@ -28,6 +30,57 @@ type Server struct {
 	store      *store.Store
 	xtream     *xtream.Client
 	enqueueCfg catalog.EnqueueConfig
+	pauses     *pause.Controller
+}
+
+func (s *Server) SetPauseController(controller *pause.Controller) {
+	s.pauses = controller
+}
+
+func (s *Server) handleListPauses(w http.ResponseWriter, r *http.Request) {
+	rules, state, err := s.pauses.List(r.Context(), time.Now())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"rules": rules, "state": state})
+}
+
+func (s *Server) handleCreatePause(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var input pause.RuleInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	rule, err := s.pauses.Create(r.Context(), input, time.Now())
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, pause.ErrInvalidRule) {
+			status = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	writeJSON(w, map[string]any{"rule": rule})
+}
+
+func (s *Server) handleDeletePause(w http.ResponseWriter, r *http.Request) {
+	id, err := pause.ParseID(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.pauses.Delete(r.Context(), id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "pause rule not found", http.StatusNotFound)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+	writeJSON(w, map[string]any{"deleted": true})
 }
 
 func New(st *store.Store, xc *xtream.Client, cfg catalog.EnqueueConfig) *Server {
@@ -35,6 +88,7 @@ func New(st *store.Store, xc *xtream.Client, cfg catalog.EnqueueConfig) *Server 
 		store:      st,
 		xtream:     xc,
 		enqueueCfg: cfg,
+		pauses:     pause.New(st.DB()),
 	}
 }
 
@@ -90,6 +144,10 @@ func (s *Server) Handler(frontend fs.FS) (http.Handler, error) {
 	mux.HandleFunc("POST /api/jobs/{id}/retry", s.handleRetryJob)
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleCancelJob)
 	mux.HandleFunc("DELETE /api/jobs/{id}", s.handleDeleteJob)
+	mux.HandleFunc("POST /api/queue/reorder", s.handleReorderQueue)
+	mux.HandleFunc("GET /api/pauses", s.handleListPauses)
+	mux.HandleFunc("POST /api/pauses", s.handleCreatePause)
+	mux.HandleFunc("DELETE /api/pauses/{id}", s.handleDeletePause)
 
 	mux.Handle("GET /", http.FileServer(http.FS(frontend)))
 	return mux, nil
@@ -851,22 +909,25 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 			name = fmt.Sprintf("%s #%d", job.Kind, job.SourceID)
 		}
 		item := map[string]any{
-			"id":             job.ID,
-			"kind":           job.Kind,
-			"source_id":      job.SourceID,
-			"name":           name,
-			"status":         job.Status,
-			"dest_path":      job.DestPath,
-			"progress_bytes": job.ProgressBytes,
-			"total_bytes":    job.TotalBytes,
-			"attempts":       job.Attempts,
-			"last_error":     job.LastError,
-			"created_at":     job.CreatedAt,
-			"started_at":     job.StartedAt,
-			"completed_at":   job.CompletedAt,
-			"series_id":      job.SeriesID,
-			"season":         job.SeasonNumber,
-			"episode_number": job.EpisodeNumber,
+			"id":               job.ID,
+			"kind":             job.Kind,
+			"source_id":        job.SourceID,
+			"name":             name,
+			"status":           job.Status,
+			"dest_path":        job.DestPath,
+			"progress_bytes":   job.ProgressBytes,
+			"total_bytes":      job.TotalBytes,
+			"attempts":         job.Attempts,
+			"last_error":       job.LastError,
+			"created_at":       job.CreatedAt,
+			"started_at":       job.StartedAt,
+			"completed_at":     job.CompletedAt,
+			"queue_position":   job.QueuePosition,
+			"phase":            job.Phase,
+			"phase_started_at": job.PhaseStartedAt,
+			"series_id":        job.SeriesID,
+			"season":           job.SeasonNumber,
+			"episode_number":   job.EpisodeNumber,
 		}
 		if job.Kind == "episode" {
 			if job.SeriesID != 0 {
@@ -889,6 +950,25 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, map[string]any{"jobs": items})
+}
+
+func (s *Server) handleReorderQueue(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		JobIDs []int64 `json:"job_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if len(request.JobIDs) == 0 {
+		http.Error(w, "job_ids is required", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.ReorderPendingJobs(r.Context(), request.JobIDs); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"status": "reordered", "count": len(request.JobIDs)})
 }
 
 func jobIDFromRequest(r *http.Request) (int64, error) {

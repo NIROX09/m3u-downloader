@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
+	"github.com/Thiritin/m3u-downloader/internal/pause"
 	"github.com/Thiritin/m3u-downloader/internal/store"
 )
 
@@ -115,6 +117,95 @@ func TestRelativeLibraryPath_DriveRoot(t *testing.T) {
 	want := filepath.Join(`How I Met Your Mother`, `Season 01`, `How I Met Your Mother - S01E01.mkv`)
 	if relative != want {
 		t.Fatalf("relative = %q, want %q", relative, want)
+	}
+}
+
+func TestProcessOne_PausePreservesPartialDownload(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	tempRoot := filepath.Join(t.TempDir(), "temp")
+	finalRoot := filepath.Join(t.TempDir(), "library")
+	if err := os.MkdirAll(tempRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(finalRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(finalRoot, "Example", "Example.mkv")
+	id, err := st.EnqueueJob(context.Background(), "vod", 1, dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	requestStarted := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "10000000")
+		w.Header().Set("Accept-Ranges", "bytes")
+		if r.Method == http.MethodHead {
+			return
+		}
+		requestStarted <- struct{}{}
+		flusher, _ := w.(http.Flusher)
+		chunk := make([]byte, 32*1024)
+		for i := 0; i < 300; i++ {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}))
+	defer server.Close()
+
+	controller := pause.New(st.DB())
+	w := &Worker{
+		Store:          st,
+		MoviesDir:      tempRoot,
+		FinalMoviesDir: finalRoot,
+		Pauses:         controller,
+		ResolveURL:     func(store.JobRow) (string, error) { return server.URL, nil },
+	}
+	done := make(chan error, 1)
+	go func() { done <- w.processOne(context.Background()) }()
+	select {
+	case <-requestStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("download request did not start")
+	}
+	if _, err := controller.Create(context.Background(), pause.RuleInput{
+		Scope: "downloads", Mode: "indefinite",
+	}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("processOne: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("active download did not pause")
+	}
+
+	status, err := st.GetJobStatus(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != "pending" {
+		t.Fatalf("status = %q, want pending", status)
+	}
+	partial := filepath.Join(tempRoot, "Example", "Example.mkv.processing.raw.part")
+	info, err := os.Stat(partial)
+	if err != nil {
+		t.Fatalf("partial download not preserved: %v", err)
+	}
+	if info.Size() == 0 {
+		t.Fatal("partial download is empty")
 	}
 }
 

@@ -67,7 +67,22 @@ CREATE TABLE IF NOT EXISTS jobs (
   last_error      TEXT,
   created_at      INTEGER NOT NULL,
   started_at      INTEGER,
-  completed_at    INTEGER
+  completed_at    INTEGER,
+  queue_position  INTEGER NOT NULL DEFAULT 0,
+  phase           TEXT NOT NULL DEFAULT 'queued',
+  phase_started_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS pause_rules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  scope TEXT NOT NULL CHECK(scope IN ('downloads','iptv','both')),
+  mode TEXT NOT NULL CHECK(mode IN ('indefinite','duration','at','schedule')),
+  starts_at INTEGER,
+  ends_at INTEGER,
+  days_mask INTEGER NOT NULL DEFAULT 0,
+  start_time TEXT,
+  end_time TEXT,
+  created_at INTEGER NOT NULL
 );
 
 -- Series the user has queued in full. The catalog refresh fetches fresh

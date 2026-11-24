@@ -51,6 +51,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate job episode metadata: %w", err)
 	}
+	if err := migrateJobQueueMetadata(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate job queue metadata: %w", err)
+	}
 
 	return &Store{db: db}, nil
 }
@@ -151,5 +155,73 @@ func migrateJobEpisodeMetadata(db *sql.DB) error {
 			)
 		WHERE kind='episode'
 		  AND (series_id IS NULL OR season_number IS NULL OR episode_number IS NULL)`)
+	return err
+}
+
+func migrateJobQueueMetadata(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(jobs)`)
+	if err != nil {
+		return err
+	}
+	foundQueuePosition := false
+	foundPhase := false
+	foundPhaseStarted := false
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, colType string
+		var defaultV interface{}
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultV, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		switch name {
+		case "queue_position":
+			foundQueuePosition = true
+		case "phase":
+			foundPhase = true
+		case "phase_started_at":
+			foundPhaseStarted = true
+		}
+	}
+	rows.Close()
+
+	if !foundQueuePosition {
+		if _, err := db.Exec(`ALTER TABLE jobs ADD COLUMN queue_position INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	if !foundPhase {
+		if _, err := db.Exec(`ALTER TABLE jobs ADD COLUMN phase TEXT NOT NULL DEFAULT 'queued'`); err != nil {
+			return err
+		}
+	}
+	if !foundPhaseStarted {
+		if _, err := db.Exec(`ALTER TABLE jobs ADD COLUMN phase_started_at INTEGER`); err != nil {
+			return err
+		}
+	}
+
+	_, err = db.Exec(`
+			UPDATE jobs
+			SET queue_position=(
+				SELECT COUNT(*) FROM jobs earlier
+				WHERE earlier.created_at < jobs.created_at
+				   OR (earlier.created_at = jobs.created_at AND earlier.id <= jobs.id)
+			)
+			WHERE queue_position=0`)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`
+			UPDATE jobs
+			SET phase='completed'
+			WHERE status='completed' AND phase='queued'`)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`
+			UPDATE jobs
+			SET phase='download'
+			WHERE status='active' AND phase='queued'`)
 	return err
 }
