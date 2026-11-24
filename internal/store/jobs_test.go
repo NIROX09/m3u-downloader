@@ -136,6 +136,53 @@ func TestRequeueJobNoAttemptDoesNotIncrement(t *testing.T) {
 	}
 }
 
+func TestRequeueInterruptedJobsPreservesProgress(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	id, err := s.EnqueueJob(ctx, "vod", 100, "/p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimNext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateProgress(ctx, id, 123, 456); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetJobPhase(ctx, id, "download"); err != nil {
+		t.Fatal(err)
+	}
+
+	requeued, err := s.RequeueInterruptedJobs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requeued != 1 {
+		t.Fatalf("requeued = %d, want 1", requeued)
+	}
+
+	var status, phase, lastError string
+	var progress, total int64
+	var attempts int
+	var startedAt *int64
+	err = s.DB().QueryRow(`
+		SELECT status, phase, last_error, progress_bytes, total_bytes, attempts, started_at
+		FROM jobs WHERE id=?`, id).Scan(
+		&status, &phase, &lastError, &progress, &total, &attempts, &startedAt,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != "pending" || phase != "download" || progress != 123 ||
+		total != 456 || attempts != 0 || startedAt != nil {
+		t.Fatalf("recovered job state = status:%q phase:%q progress:%d/%d attempts:%d started:%v",
+			status, phase, progress, total, attempts, startedAt)
+	}
+	if lastError != "interrupted by worker restart" {
+		t.Errorf("last_error = %q", lastError)
+	}
+}
+
 func TestRequeueClearsStartedAt(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

@@ -77,6 +77,13 @@ func isDestinationUnavailable(err error) bool {
 
 // Run polls the queue and processes one job at a time. Returns when ctx is cancelled.
 func (w *Worker) Run(ctx context.Context) error {
+	requeued, err := w.Store.RequeueInterruptedJobs(ctx)
+	if err != nil {
+		return fmt.Errorf("recover interrupted jobs: %w", err)
+	}
+	if requeued > 0 {
+		w.log().Info("requeued interrupted jobs", "count", requeued)
+	}
 	if w.MaxRetries == 0 {
 		w.MaxRetries = 3
 	}

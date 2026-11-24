@@ -210,6 +210,21 @@ func (s *Store) RequeueJobNoAttempt(ctx context.Context, id int64, lastErr strin
 	return err
 }
 
+// RequeueInterruptedJobs restores active jobs after a worker restart without
+// consuming retry attempts or discarding their saved download progress.
+func (s *Store) RequeueInterruptedJobs(ctx context.Context) (int, error) {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE jobs
+		SET status='pending', started_at=NULL, last_error='interrupted by worker restart',
+		    phase_started_at=NULL
+		WHERE status='active'`)
+	if err != nil {
+		return 0, err
+	}
+	count, err := result.RowsAffected()
+	return int(count), err
+}
+
 func (s *Store) FailJob(ctx context.Context, id int64, lastErr string) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE jobs SET status='failed', attempts=attempts+1, last_error=?, completed_at=? WHERE id=?`,

@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,71 @@ import (
 	"github.com/Thiritin/m3u-downloader/internal/pause"
 	"github.com/Thiritin/m3u-downloader/internal/store"
 )
+
+func TestRun_RequeuesInterruptedJobsOnStartup(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	id, err := st.EnqueueJob(context.Background(), "vod", 1, "/movies/test.mkv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ClaimNext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateProgress(context.Background(), id, 100, 1000); err != nil {
+		t.Fatal(err)
+	}
+
+	controller := pause.New(st.DB())
+	if _, err := controller.Create(context.Background(), pause.RuleInput{
+		Scope: "downloads",
+		Mode:  "indefinite",
+	}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w := &Worker{Store: st, Pauses: controller}
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		status, err := st.GetJobStatus(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status == "pending" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job status after worker startup = %q, want pending", status)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want context.Canceled", err)
+	}
+
+	status, err := st.GetJobStatus(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != "pending" {
+		t.Fatalf("job status = %q, want pending", status)
+	}
+	jobs, err := st.ListJobs(context.Background(), "pending")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].ProgressBytes != 100 || jobs[0].Attempts != 0 {
+		t.Fatalf("recovered jobs = %+v, want saved progress and no retry consumed", jobs)
+	}
+}
 
 func TestProcessOne_VOD_HappyPath(t *testing.T) {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
