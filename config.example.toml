@@ -32,3 +32,15 @@ max_retries     = 3
 # Seconds to wait before each retry (ascending; uses last value if attempts
 # exceed array length).
 backoff_seconds = [5, 30, 120]
+
+[nas]
+# Optional Windows SMB watchdog. Credentials are intentionally not stored here.
+# Windows uses saved network credentials or existing credential-manager entries.
+enabled = false
+movies_share = "\\\\NAS\\Plex\\Movies"
+series_share = "\\\\NAS\\Plex\\TV Shows"
+# Optional drive mappings. Leave empty when movies_dir and series_dir are UNC paths.
+movies_mount = "Z:"
+series_mount = "Y:"
+check_interval_seconds = 30
+reconnect_interval_seconds = 60

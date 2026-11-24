@@ -11,10 +11,12 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/Thiritin/m3u-downloader/internal/catalog"
 	"github.com/Thiritin/m3u-downloader/internal/config"
 	"github.com/Thiritin/m3u-downloader/internal/downloader"
+	"github.com/Thiritin/m3u-downloader/internal/nas"
 	"github.com/Thiritin/m3u-downloader/internal/service"
 	"github.com/Thiritin/m3u-downloader/internal/store"
 	"github.com/Thiritin/m3u-downloader/internal/tui"
@@ -118,7 +120,17 @@ func runTUI(_ []string) error {
 		return err
 	}
 	defer st.Close()
-	return tui.New(st, xc, cfg.Output.MoviesDir, cfg.Output.SeriesDir).Run()
+	moviesDir := cfg.Output.MoviesDir
+	seriesDir := cfg.Output.SeriesDir
+	if cfg.NAS.Enabled {
+		if cfg.NAS.MoviesMount != "" {
+			moviesDir = cfg.NAS.MoviesMount
+		}
+		if cfg.NAS.SeriesMount != "" {
+			seriesDir = cfg.NAS.SeriesMount
+		}
+	}
+	return tui.New(st, xc, moviesDir, seriesDir).Run()
 }
 func runWeb(_ []string) error {
 	cfg, st, xc, err := loadAll()
@@ -130,6 +142,14 @@ func runWeb(_ []string) error {
 	enqueueCfg := catalog.EnqueueConfig{
 		MoviesDir: cfg.Output.MoviesDir,
 		SeriesDir: cfg.Output.SeriesDir,
+	}
+	if cfg.NAS.Enabled {
+		if cfg.NAS.MoviesMount != "" {
+			enqueueCfg.MoviesDir = cfg.NAS.MoviesMount + `\`
+		}
+		if cfg.NAS.SeriesMount != "" {
+			enqueueCfg.SeriesDir = cfg.NAS.SeriesMount + `\`
+		}
 	}
 
 	return web.New(st, xc, enqueueCfg).ListenAndServe(cfg.Web.ListenAddr)
@@ -158,6 +178,8 @@ func runWorker(_ []string) error {
 		UserAgent:      cfg.Provider.UserAgent,
 		MoviesDir:      cfg.Output.MoviesDir,
 		SeriesDir:      cfg.Output.SeriesDir,
+		FinalMoviesDir: cfg.Output.MoviesDir,
+		FinalSeriesDir: cfg.Output.SeriesDir,
 		Remux:          cfg.Downloader.Remux,
 		MaxRetries:     cfg.Downloader.MaxRetries,
 		BackoffSeconds: cfg.Downloader.BackoffSeconds,
@@ -173,6 +195,25 @@ func runWorker(_ []string) error {
 			return "", fmt.Errorf("unknown job kind: %s", j.Kind)
 		},
 		Sidecars: makeSidecarFn(st, cfg.Provider.UserAgent),
+	}
+	if cfg.NAS.Enabled {
+		if cfg.NAS.MoviesMount != "" {
+			w.FinalMoviesDir = cfg.NAS.MoviesMount
+		}
+		if cfg.NAS.SeriesMount != "" {
+			w.FinalSeriesDir = cfg.NAS.SeriesMount
+		}
+		w.NAS = &nas.Watchdog{
+			Movies: nas.Target{
+				Name: "movies", Share: cfg.NAS.MoviesShare, Mount: cfg.NAS.MoviesMount, Dir: w.FinalMoviesDir,
+			},
+			Series: nas.Target{
+				Name: "series", Share: cfg.NAS.SeriesShare, Mount: cfg.NAS.SeriesMount, Dir: w.FinalSeriesDir,
+			},
+			CheckInterval:     time.Duration(cfg.NAS.CheckIntervalSeconds) * time.Second,
+			ReconnectInterval: time.Duration(cfg.NAS.ReconnectIntervalSeconds) * time.Second,
+			Logger:            logger,
+		}
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -303,6 +344,14 @@ func runSync(_ []string) error {
 	}
 	defer st.Close()
 	enq := catalog.EnqueueConfig{MoviesDir: cfg.Output.MoviesDir, SeriesDir: cfg.Output.SeriesDir}
+	if cfg.NAS.Enabled {
+		if cfg.NAS.MoviesMount != "" {
+			enq.MoviesDir = cfg.NAS.MoviesMount
+		}
+		if cfg.NAS.SeriesMount != "" {
+			enq.SeriesDir = cfg.NAS.SeriesMount
+		}
+	}
 	return catalog.SyncAndRefreshSubscriptions(context.Background(), st, xc, enq, func(stage string, count int) {
 		if count > 0 {
 			fmt.Printf("[sync] %s (%d)\n", stage, count)

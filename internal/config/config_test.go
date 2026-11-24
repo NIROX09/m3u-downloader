@@ -91,4 +91,24 @@ func TestValidate_DefaultsApplied(t *testing.T) {
 	if len(c.Downloader.BackoffSeconds) != 3 {
 		t.Errorf("default backoff: %v", c.Downloader.BackoffSeconds)
 	}
+	if c.NAS.CheckIntervalSeconds != 30 {
+		t.Errorf("default NAS check interval: %d", c.NAS.CheckIntervalSeconds)
+	}
+	if c.NAS.ReconnectIntervalSeconds != 60 {
+		t.Errorf("default NAS reconnect interval: %d", c.NAS.ReconnectIntervalSeconds)
+	}
+}
+
+func TestValidate_NASRequiresBothShares(t *testing.T) {
+	c := &Config{}
+	c.Provider.BaseURL = "http://x"
+	c.Provider.Username = "u"
+	c.Provider.Password = "p"
+	c.Output.MoviesDir = "/m"
+	c.Output.SeriesDir = "/s"
+	c.NAS.Enabled = true
+	c.NAS.MoviesShare = `\\nas\Movies`
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected error for missing NAS series_share")
+	}
 }

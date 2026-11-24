@@ -106,6 +106,12 @@ backoff_seconds = [5, 30, 120]
 `movies_dir` and `series_dir` must exist when the worker runs — that's the
 unmounted-volume safety check. Verify with `./m3u-dl config`.
 
+On Windows, set `[nas] enabled = true` to monitor each SMB library target
+separately. The watchdog retries unavailable connections periodically and
+requeues affected jobs without consuming retry attempts or storing passwords.
+Configure credentials through Windows saved network credentials or Credential
+Manager, not through `config.toml`.
+
 ## Use
 
 ```bash

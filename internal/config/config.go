@@ -29,6 +29,15 @@ type Config struct {
 		MaxRetries     int   `toml:"max_retries"`
 		BackoffSeconds []int `toml:"backoff_seconds"`
 	} `toml:"downloader"`
+	NAS struct {
+		Enabled                  bool   `toml:"enabled"`
+		MoviesShare              string `toml:"movies_share"`
+		SeriesShare              string `toml:"series_share"`
+		MoviesMount              string `toml:"movies_mount"`
+		SeriesMount              string `toml:"series_mount"`
+		CheckIntervalSeconds     int    `toml:"check_interval_seconds"`
+		ReconnectIntervalSeconds int    `toml:"reconnect_interval_seconds"`
+	} `toml:"nas"`
 }
 
 // DefaultPath returns the platform-appropriate config path.
@@ -93,6 +102,20 @@ func (c *Config) Validate() error {
 	}
 	if len(c.Downloader.BackoffSeconds) == 0 {
 		c.Downloader.BackoffSeconds = []int{5, 30, 120}
+	}
+	if c.NAS.CheckIntervalSeconds == 0 {
+		c.NAS.CheckIntervalSeconds = 30
+	}
+	if c.NAS.ReconnectIntervalSeconds == 0 {
+		c.NAS.ReconnectIntervalSeconds = 60
+	}
+	if c.NAS.Enabled {
+		if c.NAS.MoviesShare == "" {
+			return fmt.Errorf("nas.movies_share is required when nas.enabled is true")
+		}
+		if c.NAS.SeriesShare == "" {
+			return fmt.Errorf("nas.series_share is required when nas.enabled is true")
+		}
 	}
 	return nil
 }
