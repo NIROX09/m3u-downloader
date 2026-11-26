@@ -128,12 +128,95 @@ func TestReorderQueueHTTP(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("reorder status = %d: %s", response.Code, response.Body.String())
 	}
+	jobs, err := st.ListJobs(ctx, "pending")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 2 || jobs[0].ID != second || jobs[1].ID != first {
+		t.Fatalf("pending order after reorder = %+v, want [%d %d]", jobs, second, first)
+	}
 	job, err := st.ClaimNext(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if job == nil || job.ID != second {
 		t.Fatalf("claimed job = %+v, want ID %d", job, second)
+	}
+}
+
+func TestDownloadedQueueStatusHTTP(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	movieID, err := st.EnqueueJob(ctx, "vod", 77, "/movies/test.mkv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CompleteJob(ctx, movieID); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, episode := range []store.EpisodeRow{
+		{EpisodeID: 101, SeriesID: 9, SeasonNumber: 1, EpisodeNum: 1},
+		{EpisodeID: 102, SeriesID: 9, SeasonNumber: 1, EpisodeNum: 2},
+		{EpisodeID: 201, SeriesID: 9, SeasonNumber: 2, EpisodeNum: 1},
+	} {
+		_, err := st.DB().ExecContext(ctx, `
+			INSERT INTO episodes(episode_id,series_id,season_number,episode_num)
+			VALUES(?,?,?,?)`,
+			episode.EpisodeID, episode.SeriesID, episode.SeasonNumber, episode.EpisodeNum)
+		if err != nil {
+			t.Fatal(err)
+		}
+		jobID, err := st.EnqueueEpisodeJob(ctx, "/episodes/test.mkv", episode)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if episode.EpisodeID != 102 {
+			if err := st.CompleteJob(ctx, jobID); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	handler, err := New(st, nil, catalog.EnqueueConfig{}).Handler(fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte("test")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		path           string
+		wantQueued     bool
+		wantDownloaded bool
+	}{
+		{path: "/api/queue/movie?id=77", wantDownloaded: true},
+		{path: "/api/queue/episode?id=101", wantDownloaded: true},
+		{path: "/api/queue/season?series_id=9&season=1", wantQueued: true},
+		{path: "/api/queue/season?series_id=9&season=2", wantDownloaded: true},
+	}
+	for _, test := range tests {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, test.path, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d: %s", test.path, response.Code, response.Body.String())
+		}
+		var body struct {
+			Queued     bool `json:"queued"`
+			Downloaded bool `json:"downloaded"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Queued != test.wantQueued || body.Downloaded != test.wantDownloaded {
+			t.Errorf("GET %s returned queued=%t downloaded=%t; want queued=%t downloaded=%t",
+				test.path, body.Queued, body.Downloaded, test.wantQueued, test.wantDownloaded)
+		}
 	}
 }
 

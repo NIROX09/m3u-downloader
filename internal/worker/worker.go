@@ -1,4 +1,4 @@
-// Package worker drives a single download job from claim through finalize.
+// Package worker drives queued downloads through download and finalization.
 package worker
 
 import (
@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -41,9 +42,12 @@ type Worker struct {
 	Logger         *slog.Logger
 	NAS            *nas.Watchdog
 	Pauses         *pause.Controller
+	remuxFn        func(context.Context, string, string) error
 }
 
 var ErrPaused = errors.New("job paused by schedule")
+
+const pipelineDownloadDelay = 5 * time.Second
 
 func (w *Worker) log() *slog.Logger {
 	if w.Logger != nil {
@@ -75,7 +79,8 @@ func isDestinationUnavailable(err error) bool {
 	return errors.As(err, &u)
 }
 
-// Run polls the queue and processes one job at a time. Returns when ctx is cancelled.
+// Run keeps provider downloads serial while allowing completed downloads to
+// remux and transfer in the background.
 func (w *Worker) Run(ctx context.Context) error {
 	requeued, err := w.Store.RequeueInterruptedJobs(ctx)
 	if err != nil {
@@ -90,7 +95,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	if len(w.BackoffSeconds) == 0 {
 		w.BackoffSeconds = []int{5, 30, 120}
 	}
-	if w.Remux {
+	if w.Remux && w.remuxFn == nil {
 		if err := remux.EnsureFFmpeg(); err != nil {
 			return err
 		}
@@ -98,16 +103,97 @@ func (w *Worker) Run(ctx context.Context) error {
 	if w.NAS != nil {
 		go w.NAS.Run(ctx)
 	}
-	tick := time.NewTicker(2 * time.Second)
+	tick := time.NewTicker(250 * time.Millisecond)
 	defer tick.Stop()
+	var pipelines sync.WaitGroup
+	nextDownloadAt := time.Time{}
 	for {
 		select {
 		case <-ctx.Done():
+			pipelines.Wait()
 			return ctx.Err()
-		case <-tick.C:
-			if err := w.processOne(ctx); err != nil {
-				w.log().Error("processOne", "err", err)
+		default:
+		}
+
+		if w.Pauses != nil {
+			paused, err := w.Pauses.IsPaused(ctx, "downloads")
+			if err != nil {
+				w.log().Error("check download pause", "err", err)
+				select {
+				case <-ctx.Done():
+					pipelines.Wait()
+					return ctx.Err()
+				case <-tick.C:
+					continue
+				}
 			}
+			if paused {
+				select {
+				case <-ctx.Done():
+					pipelines.Wait()
+					return ctx.Err()
+				case <-tick.C:
+					continue
+				}
+			}
+		}
+
+		if wait := time.Until(nextDownloadAt); wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				pipelines.Wait()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+
+		job, err := w.Store.ClaimNext(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				pipelines.Wait()
+				return ctx.Err()
+			}
+			w.log().Error("claim", "err", err)
+			continue
+		}
+		if job == nil {
+			select {
+			case <-ctx.Done():
+				pipelines.Wait()
+				return ctx.Err()
+			case <-tick.C:
+				continue
+			}
+		}
+
+		downloadComplete := make(chan struct{})
+		pipelineDone := make(chan struct{})
+		var signalOnce sync.Once
+		pipelines.Add(1)
+		go func(job store.JobRow) {
+			defer pipelines.Done()
+			defer close(pipelineDone)
+			if err := w.processClaimedJob(ctx, job, func() {
+				signalOnce.Do(func() { close(downloadComplete) })
+			}); err != nil {
+				w.log().Error("process job", "id", job.ID, "err", err)
+			}
+		}(*job)
+
+		select {
+		case <-downloadComplete:
+			nextDownloadAt = time.Now().Add(pipelineDownloadDelay)
+		case <-pipelineDone:
+			select {
+			case <-downloadComplete:
+				nextDownloadAt = time.Now().Add(pipelineDownloadDelay)
+			default:
+			}
+		case <-ctx.Done():
+			pipelines.Wait()
+			return ctx.Err()
 		}
 	}
 }
@@ -129,9 +215,13 @@ func (w *Worker) processOne(ctx context.Context) error {
 	if job == nil {
 		return nil
 	}
+	return w.processClaimedJob(ctx, *job, nil)
+}
+
+func (w *Worker) processClaimedJob(ctx context.Context, job store.JobRow, onDownloadComplete func()) error {
 	w.log().Info("processing", "id", job.ID, "kind", job.Kind, "src", job.SourceID)
 
-	runErr := w.runJob(ctx, *job)
+	runErr := w.runJob(ctx, job, onDownloadComplete)
 
 	// If the user cancelled or deleted the job mid-flight, the runJob ctx
 	// was cancelled by the per-job poller. Don't transition state — the
@@ -197,7 +287,7 @@ func (w *Worker) processOne(ctx context.Context) error {
 	return w.Store.FailJob(ctx, job.ID, runErr.Error())
 }
 
-func (w *Worker) runJob(parent context.Context, job store.JobRow) error {
+func (w *Worker) runJob(parent context.Context, job store.JobRow, onDownloadComplete func()) error {
 	if job.DestPath == "" {
 		return errPermanent{errors.New("job has no dest_path")}
 	}
@@ -284,6 +374,9 @@ func (w *Worker) runJob(parent context.Context, job store.JobRow) error {
 		if _, err := os.Stat(finalRoot); err != nil {
 			return errDestinationUnavailable{fmt.Errorf("final destination unavailable: %s: %w", finalRoot, err)}
 		}
+		if onDownloadComplete != nil {
+			onDownloadComplete()
+		}
 		_ = w.Store.SetJobPhase(ctx, job.ID, "transfer")
 		if err := os.MkdirAll(filepath.Dir(job.DestPath), 0o755); err != nil {
 			return errDestinationUnavailable{fmt.Errorf("mkdir final destination: %w", err)}
@@ -329,7 +422,14 @@ func (w *Worker) runJob(parent context.Context, job store.JobRow) error {
 
 	if w.Remux {
 		_ = w.Store.SetJobPhase(ctx, job.ID, "remux")
-		if err := remux.ToMKV(ctx, tmp, tempDest); err != nil {
+		if onDownloadComplete != nil {
+			onDownloadComplete()
+		}
+		remuxFn := w.remuxFn
+		if remuxFn == nil {
+			remuxFn = remux.ToMKV
+		}
+		if err := remuxFn(ctx, tmp, tempDest); err != nil {
 			if isPaused() {
 				_ = os.Remove(tempDest)
 				return ErrPaused
@@ -340,6 +440,9 @@ func (w *Worker) runJob(parent context.Context, job store.JobRow) error {
 	} else {
 		if err := os.Rename(tmp, tempDest); err != nil {
 			return err
+		}
+		if onDownloadComplete != nil {
+			onDownloadComplete()
 		}
 	}
 	if _, err := os.Stat(finalRoot); err != nil {

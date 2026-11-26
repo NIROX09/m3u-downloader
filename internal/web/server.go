@@ -389,16 +389,18 @@ func (s *Server) handleMovieQueueStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	status, err := s.store.GetQueuedJobStatus(ctx, "vod", id)
+	statuses, err := s.store.JobStatusBySource(ctx)
 	if err != nil {
 		log.Printf("get movie queue status %d failed: %v", id, err)
 		http.Error(w, "queue status could not be loaded", http.StatusInternalServerError)
 		return
 	}
+	status := statuses[store.JobStatusKey("vod", id)]
 
 	writeJSON(w, map[string]any{
-		"queued": status != "",
-		"status": status,
+		"queued":     status == "pending" || status == "active",
+		"status":     status,
+		"downloaded": status == "completed",
 	})
 }
 
@@ -451,12 +453,18 @@ func (s *Server) handleEpisodeQueueStatus(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	status, err := s.store.GetQueuedJobStatus(ctx, "episode", id)
+	statuses, err := s.store.JobStatusBySource(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("get episode queue status %d failed: %v", id, err)
+		http.Error(w, "queue status could not be loaded", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]any{"queued": status != "", "status": status})
+	status := statuses[store.JobStatusKey("episode", id)]
+	writeJSON(w, map[string]any{
+		"queued":     status == "pending" || status == "active",
+		"status":     status,
+		"downloaded": status == "completed",
+	})
 }
 
 func (s *Server) handleQueueEpisode(w http.ResponseWriter, r *http.Request) {
@@ -540,17 +548,28 @@ func (s *Server) handleSeasonQueueStatus(w http.ResponseWriter, r *http.Request)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	statuses, err := s.store.JobStatusBySource(ctx)
+	if err != nil {
+		log.Printf("get season queue status %d/%d failed: %v", seriesID, season, err)
+		http.Error(w, "queue status could not be loaded", http.StatusInternalServerError)
+		return
+	}
 	queued := 0
+	downloaded := 0
 	for _, episode := range episodes {
-		status, err := s.store.GetQueuedJobStatus(ctx, "episode", episode.EpisodeID)
-		if err == nil && status != "" {
+		status := statuses[store.JobStatusKey("episode", episode.EpisodeID)]
+		if status == "pending" || status == "active" {
 			queued++
+		}
+		if status == "completed" {
+			downloaded++
 		}
 	}
 	writeJSON(w, map[string]any{
 		"queued":        queued > 0,
 		"queued_count":  queued,
 		"episode_count": len(episodes),
+		"downloaded":    len(episodes) > 0 && downloaded == len(episodes),
 	})
 }
 
@@ -620,6 +639,12 @@ func (s *Server) handleSeriesQueueStatus(w http.ResponseWriter, r *http.Request)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	statuses, err := s.store.JobStatusBySource(ctx)
+	if err != nil {
+		log.Printf("get series queue status %d failed: %v", seriesID, err)
+		http.Error(w, "queue status could not be loaded", http.StatusInternalServerError)
+		return
+	}
 	queuedCount := 0
 	episodeCount := 0
 	for _, season := range seasons {
@@ -630,8 +655,8 @@ func (s *Server) handleSeriesQueueStatus(w http.ResponseWriter, r *http.Request)
 		}
 		episodeCount += len(seasonEpisodes)
 		for _, episode := range seasonEpisodes {
-			status, err := s.store.GetQueuedJobStatus(ctx, "episode", episode.EpisodeID)
-			if err == nil && status != "" {
+			status := statuses[store.JobStatusKey("episode", episode.EpisodeID)]
+			if status == "pending" || status == "active" {
 				queuedCount++
 			}
 		}

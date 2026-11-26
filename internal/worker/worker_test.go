@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -281,6 +282,7 @@ func TestProcessOne_CompletedTempFileWaitsForNAS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	defer st.Close()
 
 	processingRoot := filepath.Join(tmp, "Temp", "Movies")
@@ -338,5 +340,158 @@ func TestProcessOne_CompletedTempFileWaitsForNAS(t *testing.T) {
 	}
 	if _, err := os.Stat(tempDest); !os.IsNotExist(err) {
 		t.Fatalf("temporary completed file should be removed, stat err=%v", err)
+	}
+}
+
+func TestRun_OverlapsDownstreamWorkButSerializesDownloads(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	root := t.TempDir()
+	tempRoot := filepath.Join(root, "temp")
+	finalRoot := filepath.Join(root, "library")
+	if err := os.MkdirAll(tempRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(finalRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for id := 1; id <= 2; id++ {
+		dest := filepath.Join(finalRoot, "Test", strconv.Itoa(id)+".mkv")
+		if _, err := st.EnqueueJob(context.Background(), "vod", id, dest); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var activeDownloads atomic.Int32
+	var maxActiveDownloads atomic.Int32
+	downloadStarted := make(chan time.Time, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.Header().Set("Content-Length", "5")
+			return
+		}
+		active := activeDownloads.Add(1)
+		defer activeDownloads.Add(-1)
+		for {
+			maximum := maxActiveDownloads.Load()
+			if active <= maximum || maxActiveDownloads.CompareAndSwap(maximum, active) {
+				break
+			}
+		}
+		downloadStarted <- time.Now()
+		_, _ = w.Write([]byte("video"))
+	}))
+	defer server.Close()
+
+	remuxStarted := make(chan string, 2)
+	releaseRemux := make(chan struct{})
+	w := &Worker{
+		Store:          st,
+		MoviesDir:      tempRoot,
+		FinalMoviesDir: finalRoot,
+		Remux:          true,
+		ResolveURL: func(job store.JobRow) (string, error) {
+			return server.URL + "/" + strconv.Itoa(job.SourceID), nil
+		},
+		remuxFn: func(ctx context.Context, input, output string) error {
+			remuxStarted <- filepath.Base(output)
+			select {
+			case <-releaseRemux:
+				return os.WriteFile(output, []byte("remuxed"), 0o644)
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- w.Run(ctx)
+		close(runDone)
+	}()
+	defer func() {
+		cancel()
+		select {
+		case <-runDone:
+		case <-time.After(5 * time.Second):
+			t.Error("worker did not stop after cancellation")
+		}
+	}()
+
+	var firstStarted time.Time
+	select {
+	case firstStarted = <-downloadStarted:
+	case <-time.After(4 * time.Second):
+		t.Fatal("first provider download did not start")
+	}
+	select {
+	case first := <-remuxStarted:
+		if first != "1.mkv.processing" {
+			t.Fatalf("first remux output = %q, want first queued job", first)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("first job did not enter remux")
+	}
+
+	var secondStarted time.Time
+	select {
+	case secondStarted = <-downloadStarted:
+	case <-time.After(8 * time.Second):
+		t.Fatal("second provider download did not start while first job was still processing")
+	}
+	select {
+	case second := <-remuxStarted:
+		if second != "2.mkv.processing" {
+			t.Fatalf("second remux output = %q, want second queued job", second)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("second job did not enter remux")
+	}
+	if gap := secondStarted.Sub(firstStarted); gap < 4*time.Second {
+		t.Fatalf("download start gap = %s, want approximately 5 seconds", gap)
+	}
+	if got := maxActiveDownloads.Load(); got != 1 {
+		t.Fatalf("maximum simultaneous provider downloads = %d, want 1", got)
+	}
+	activeJobs, err := st.ListJobs(context.Background(), "active")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(activeJobs) != 2 {
+		t.Fatalf("active jobs during overlap = %d, want both remux jobs active", len(activeJobs))
+	}
+	for _, job := range activeJobs {
+		if job.Phase != "remux" {
+			t.Fatalf("active job %d phase = %q, want remux", job.ID, job.Phase)
+		}
+	}
+
+	close(releaseRemux)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		completed, err := st.ListJobs(context.Background(), "completed")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(completed) == 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	completed, err := st.ListJobs(context.Background(), "completed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(completed) != 2 {
+		t.Fatalf("completed jobs = %d, want 2", len(completed))
+	}
+
+	cancel()
+	if err := <-runDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want context.Canceled", err)
 	}
 }
